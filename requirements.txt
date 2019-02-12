@@ -66,9 +66,9 @@ tb-nightly==1.13.0a20190201
 termcolor==1.1.0
 terminado==0.8.1
 testpath==0.4.2
-tf-estimator-nightly==1.13.0.dev2019012901
-tf-nightly==1.13.0.dev20190201
-tfp-nightly==0.7.0.dev20190201
+tf-estimator-nightly
+tf-nightly
+tfp-nightly
 tornado==5.1.1
 traitlets==4.3.2
 wcwidth==0.1.7
