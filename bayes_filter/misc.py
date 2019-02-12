@@ -4,11 +4,91 @@ import astropy.coordinates as ac
 import astropy.units as au
 from .settings import dist_type, float_type, jitter
 from timeit import default_timer
+from .odeint import odeint
+
+
+def K_parts(kern, X_list, X_dims_list):
+    L = len(X_list)
+    if len(X_dims_list) != L:
+        raise ValueError("X_list and X_dims_list size must be same, and are {} and {}".format(L, len(X_dims_list)))
+
+    # def _rm_antenna(X,dims):
+    #     #Nt, Nd, Na, ndims
+    #     X = tf.reshape(X,tf.concat([dims, tf.shape(X)[-1:]],axis=0))
+    #     return flatten_batch_dims(X[:,:,1:,:],3)
+    #
+    # def _rm_direction(X,dims):
+    #     #Nt, Nd, Na, ndims
+    #     X = tf.reshape(X,tf.concat([dims, tf.shape(X)[-1:]],axis=0))
+    #     return flatten_batch_dims(X[:,1:,:,:],3)
+    #
+    #
+    # if kern.obs_type in ['DTEC','DDTEC']:
+    #     for i in range(1,L):
+    #         X_list[i] = _rm_antenna(X_list[i])
+    #         X_dims_list[i][2] -= 1
+    # if kern.obs_type in ['DDTEC']:
+    #     for i in range(1,L):
+    #         X_list[i] = _rm_direction(X_list[i])
+    #         X_dims_list[i][1] -= 1
+
+    if L == 1:
+        # raise ValueError("X_list should have more than 1 element.")
+        return kern.K(X_list[0], X_dims_list[0], X_list[0], X_dims_list[0])
+    if L == 2:
+        X = tf.concat(X_list, axis=0)
+
+        K00 = kern.K(X_list[0], X_dims_list[0], X_list[0], X_dims_list[0])
+        K01 = kern.K(X_list[0], X_dims_list[0], X_list[1], X_dims_list[1])
+        K11 = kern.K(X_list[1], X_dims_list[1], X_list[1], X_dims_list[1])
+        return tf.concat([tf.concat([K00, K01],axis=-1),
+                          tf.concat([tf.transpose(K01, (1,0) if kern.squeeze else (0,2,1)), K11], axis=-1)],
+                         axis=-2)
+
+
+    K = [[None for _ in range(L)] for _ in range(L)]
+    for i in range(L):
+        for j in range(i,L):
+            K_part = kern.K(X_list[i], X_dims_list[i], X_list[j], X_dims_list[j])
+            K[i][j] = K_part
+            if i == j:
+                continue
+            K[j][i] = tf.transpose(K_part,(1,0) if kern.squeeze else (0,2,1))
+        K[i] = tf.concat(K[i],axis=1 if kern.squeeze else 2)
+    K = tf.concat(K, axis=0 if kern.squeeze else 1)
+    return K
+
+def log_normal_solve_fwhm(a,b,D=0.5):
+    """Solve the parameters for a log-normal distribution given the 1/D power at limits a and b.
+
+    :param a: float
+        The lower D power
+    :param b: float
+        The upper D power
+    :return: tuple of (mu, stddev) parametrising the log-normal distribution
+    """
+    if b < a:
+        raise ValueError("b should be greater than a")
+    lower = np.log(a)
+    upper = np.log(b)
+    d = upper - lower #2 sqrt(2 sigma**2 ln(1/D))
+    sigma2 = 0.5*(0.5*d)**2/np.log(1./D)
+    s = upper + lower #2 (mu - sigma**2)
+    mu = 0.5*s + sigma2
+    return mu, np.sqrt(sigma2)
+
 
 
 def diagonal_jitter(N):
-    return tf.diag(tf.fill([N],tf.convert_to_tensor(jitter,float_type)))
+    """
+    Create diagonal matrix with jitter on the diagonal
 
+    :param N: int, tf.int32
+        The size of diagonal
+    :return: float_type, Tensor, [N, N]
+        The diagonal matrix with jitter on the diagonal.
+    """
+    return tf.diag(tf.fill([N],tf.convert_to_tensor(jitter,float_type)))
 
 def timer():
     """

@@ -50,7 +50,7 @@ class IndexFeed(Feed):
 
 
 class DataFeed(Feed):
-    def __init__(self, index_feed, *data, event_size=1, num_parallel_calls=10):
+    def __init__(self, index_feed:IndexFeed, *data, event_size=1, num_parallel_calls=10):
         """
         Create a time feed
         :param index_feed: IndexFeed
@@ -86,7 +86,7 @@ class DataFeed(Feed):
         return data
 
 class TimeFeed(Feed):
-    def __init__(self, index_feed, times, num_parallel_calls=10):
+    def __init__(self, index_feed: IndexFeed, times, num_parallel_calls=10):
         """
         Create a time feed
         :param index_feed: IndexFeed
@@ -117,10 +117,22 @@ class TimeFeed(Feed):
         indices = tf.range(index, next_index)
         return tf.gather(self.times, indices, axis=0)
 
+class ContinueFeed(Feed):
+    def __init__(self, time_feed: TimeFeed, num_parallel_calls = 10):
+        self.num_parallel_calls = tf.convert_to_tensor(num_parallel_calls, tf.int32)
+        self.time_feed = time_feed
+        self.continue_feed = time_feed.index_feed.feed.map(self.still_active, num_parallel_calls=self.num_parallel_calls)
+        self.feed = self.continue_feed
+        self.num_blocks = tf.cast(tf.ceil(tf.div(tf.cast(self.time_feed.Nt, tf.float32), tf.cast(self.time_feed.slice_size, tf.float32))), tf.int32)
+
+    def still_active(self,index, next_index):
+        return tf.less(next_index, self.time_feed.Nt)
+
 class CoordinateFeed(object):
-    def __init__(self, time_feed, *coordinates, coord_map=None, num_parallel_calls=10):
+    def __init__(self, time_feed:TimeFeed, *coordinates, coord_map=None, num_parallel_calls=10):
         """
         Creates  coordinate feed, that broadcasts time slices with stacked coordinates.
+
         :param time_feed: TimeFeed
             The pulse of the coordinate feed, provides time slices
         :param coordinates: list of float_type, Tensor
@@ -154,3 +166,22 @@ class CoordinateFeed(object):
         if flat:
             return flatten_batch_dims(X)
         return X
+
+class CoordinateDimFeed(object):
+    def __init__(self, coord_feed:CoordinateFeed, num_parallel_calls=10):
+        """
+        Create a coordinate dimension feed that correctly incorperates partial batches.
+
+        :param coord_feed: CoordinateFeed
+        :param num_parallel_calls: int
+        """
+        self.num_parallel_calls = tf.convert_to_tensor(num_parallel_calls, tf.int32)
+        self.coord_feed = coord_feed
+        self.dim_feed = self.coord_feed.feed.map(self.correct_dims, num_parallel_calls=self.num_parallel_calls)
+        self.feed = self.dim_feed
+
+    def correct_dims(self, X):
+        """Correct for partial batch dims."""
+        N = tf.shape(X)[0]
+        N_slice = tf.reduce_prod(self.coord_feed.dims[1:])
+        return tf.concat([[tf.floordiv(N, N_slice)], self.coord_feed.dims[1:]], axis=0)

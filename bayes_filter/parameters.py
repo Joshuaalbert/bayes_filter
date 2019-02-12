@@ -100,7 +100,16 @@ class ScaledPositiveBijector(tfp.bijectors.Chain):
     def __init__(self, scale=1., validate_args=False):
         self.scale = tf.convert_to_tensor(scale, float_type)
         super(ScaledPositiveBijector, self).__init__(
-            [tfp.bijectors.AffineScalar(scale=self.scale),tfp.bijectors.Exp()], validate_args=validate_args,
+            [tfp.bijectors.AffineScalar(scale=self.scale),tfp.bijectors.Softplus()], validate_args=validate_args,
+            name='scaled_positive_bijector')
+
+class ScaledLowerBoundedBijector(tfp.bijectors.Chain):
+    def __init__(self, lower_bound=0.,scale=1.,  validate_args=False):
+        self.scale = tf.convert_to_tensor(scale, float_type)
+        self.lower_bound = tf.convert_to_tensor(lower_bound, float_type)
+        super(ScaledLowerBoundedBijector, self).__init__(
+            [tfp.bijectors.AffineScalar(shift=self.lower_bound if self.lower_bound != 0. else None, scale=self.scale),
+             tfp.bijectors.Softplus()], validate_args=validate_args,
             name='scaled_positive_bijector')
 
 
@@ -114,7 +123,7 @@ class ScaledBijector(tfp.bijectors.Chain):
 
 class Parameter(object):
     def __init__(self, unconstrained_value=None, constrained_value=None, bijector=None, distribution=None,
-                 dtype=float_type):
+                 dtype=float_type, shape = None):
         """
         Builds a parameter with a bijector and distribution. If the unconstrained value is X, then the constrained
         value is Y = bijector.forward(X), and `distribution` models p(Y) then unconstrained_prior models p(X).
@@ -148,6 +157,9 @@ class Parameter(object):
         if constrained_value is not None:
             self.constrained_value = tf.convert_to_tensor(constrained_value, dtype)
             self.unconstrained_value = self.bijector.inverse(self.constrained_value)
+        if shape is not None:
+            self.constrained_value = tf.reshape(self.constrained_value, shape)
+            self.unconstrained_value = tf.reshape(self.unconstrained_value, shape)
         if distribution is None:
             distribution = tfp.distributions.Uniform(
                 low = tf.constant(0.,dtype=float_type), high = tf.constant(1.,dtype=float_type))
