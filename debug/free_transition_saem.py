@@ -1,4 +1,4 @@
-from bayes_filter.filters import FreeTransition
+from bayes_filter.filters import FreeTransitionSAEM
 import tensorflow as tf
 import os
 from bayes_filter.misc import load_array_file
@@ -57,7 +57,7 @@ def simulated_ddtec(tf_session, lofar_array):
                     K = tf_session.run(kern.K(next))
                     L = np.linalg.cholesky(K+1e-6*np.eye(K.shape[-1]))
                     ddtec = np.einsum('ab,b->a',L, np.random.normal(size=L.shape[1]))
-                    freqs = np.linspace(110.e6, 160.e6, 10)
+                    freqs = np.linspace(110.e6, 160.e6, 6)
                     Y_real.append(np.cos(-8.448e9*ddtec[:,None]/freqs))
                     Y_imag.append(np.sin(-8.448e9 * ddtec[:, None] / freqs))
                     if not tf_session.run(cont):
@@ -80,14 +80,18 @@ if __name__ == '__main__':
     with sess.graph.as_default():
         simulated_ddtec = simulated_ddtec(sess, lofar_array2(arrays()))
 
-        free_transition = FreeTransition(
+        free_transition = FreeTransitionSAEM(
             simulated_ddtec.freqs,
             simulated_ddtec.data_feed,
             simulated_ddtec.coord_feed,
             simulated_ddtec.star_coord_feed)
-        filtered_res = free_transition.filter(num_samples=1000, num_chains=1, parallel_iterations=1, num_leapfrog_steps=5,
-                               target_rate=0.5, num_burnin_steps=0)
 
-        res = sess.run(filtered_res)
-        print(res)
+        filtered_res, inits = free_transition.filter_step(num_samples=20, num_chains=1, parallel_iterations=1, num_leapfrog_steps=5,
+                               target_rate=0.5, num_burnin_steps=0,num_saem_samples=12,saem_steps=13,saem_learning_rate=0.1)
+        sess.run(inits)
+        cont = True
+        while cont:
+            res = sess.run(filtered_res)
+            # print(res)
+            cont = res.cont
 
