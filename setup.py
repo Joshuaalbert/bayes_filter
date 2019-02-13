@@ -19,7 +19,7 @@ setup(name='bayes_filter',
         'pytest>=2.8',
     ],
     package_data= {'bayes_filter':['arrays/*']},
-#    package_dir = {'':'src'},
-#    packages=find_packages('src')
+   package_dir = {'':'./'},
+   packages=find_packages('./')
      )
 
