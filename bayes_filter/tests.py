@@ -543,7 +543,7 @@ def test_isotropic_time_general(tf_session, lofar_array):
         plt.colorbar()
         plt.show()
 
-        # np.linalg.cholesky(K2 + 1e-6*np.eye(K2.shape[-1]))
+        np.linalg.cholesky(K1 + 1e-6*np.eye(K1.shape[-1]))
 
         # assert np.all(np.isclose(K1, K2))
 

@@ -923,8 +923,8 @@ class DTECIsotropicTimeGeneral(object):
         if self.obs_type == 'DDTEC':
             X = tf.concat([bring_together(X, [slice(0, 7, 1)]),  #i,alpha
                            bring_together(X, [slice(0, 4, 1), slice(7, 10, 1)]),  #i0, alpha
-                           bring_together(X, [slice(0, 1, 1), slice(10,13,1), slice(7, 10, 1)]),  #i0,alpha0
-                           bring_together(X, [slice(0, 1, 1), slice(10, 13, 1), slice(4, 7, 1)])  # i,alpha0
+                           bring_together(X, [slice(0, 1, 1), slice(10, 13, 1), slice(4, 7, 1)]),  # i,alpha0
+                           bring_together(X, [slice(0, 1, 1), slice(10, 13, 1), slice(7, 10, 1)]),  # i0,alpha0
                            ],
                           axis=0)
         # num_chains, res1, N', 3
@@ -999,19 +999,9 @@ class DTECIsotropicTimeGeneral(object):
         if self.obs_type == 'DDTEC':
             n = 4
         out = []
-        # if sym:
-        #     def _sym(t):
-        #         return
-        #     for i in range(n):
-        #         for j in range(i, n):
-        #             if (i+j) % 2 == 1:
-        #                 out.append(-2 * I[:, i * N:(i + 1) * N, j * Np:(j + 1) * Np])
-        #             else:
-        #                 out.append(I[:,i*N:(i+1)*N, j*Np:(j+1)*Np])
-        # else:
         for i in range(n):
             for j in range(n):
-                out.append(-1**(i+j) * I[:,  i*N:(i+1)*N, j*Np:(j+1)*Np])
+                out.append((1. if (i + j) % 2 == 0 else -1.) * I[:, i * N:(i + 1) * N, j * Np:(j + 1) * Np])
         with tf.control_dependencies([tf.print(tf.shape(I),tf.shape(K))]):
             result = K_time * tf.add_n(out)
 
