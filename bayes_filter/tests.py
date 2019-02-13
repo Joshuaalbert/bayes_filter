@@ -4,7 +4,7 @@ import tensorflow_probability as tfp
 import numpy as np
 import sys, os
 from .data_feed import CoordinateFeed, TimeFeed, IndexFeed, DataFeed, init_feed, ContinueFeed, CoordinateDimFeed
-from .misc import flatten_batch_dims, load_array_file, make_coord_array, timer, diagonal_jitter, log_normal_solve_fwhm, K_parts
+from .misc import flatten_batch_dims, load_array_file, make_coord_array, timer, diagonal_jitter, log_normal_solve_fwhm, K_parts, random_sample
 from .coord_transforms import itrs_to_enu_6D, tf_coord_transform, itrs_to_enu_with_references
 import astropy.units as au
 import astropy.coordinates as ac
@@ -180,6 +180,12 @@ def test_coord_dim_feed(tf_session):
 ###
 # misc tests
 
+def test_random_sample(tf_session):
+    with tf_session.graph.as_default():
+        t = tf.ones((6,5,8))
+        assert tf_session.run(random_sample(t)).shape == (6,5,8)
+        assert tf_session.run(random_sample(t,3)).shape == (3, 5, 8)
+        assert tf_session.run(random_sample(t, 9)).shape == (6, 5, 8)
 
 
 def test_flatten_batch_dims(tf_session):
@@ -522,22 +528,24 @@ def test_isotropic_time_general(tf_session, lofar_array):
         dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
         Xd = tf.concat([ra, dec], axis=1)
         Xa = tf.constant(np.concatenate([lofar_array[1][0:1, :], lofar_array[1]], axis=0), dtype=float_type)
-        coord_feed2 = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_6D))
+        coord_feed2 = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
         init2, next2 = init_feed(coord_feed2)
 
-        kern = DTECIsotropicTimeGeneral(variance=0.07,timescale=30.,lengthscales=5., fed_kernel='RBF',obs_type='TEC',resolution=5, squeeze=True)
+        kern = DTECIsotropicTimeGeneral(variance=0.01,timescale=30.,lengthscales=20., a=250., b=100., fed_kernel='RBF',obs_type='DDTEC',resolution=3, squeeze=True)
 
         tf_session.run([init, init2])
-        K1, K2 = tf_session.run([kern.K(next), kern.K(next, next)])
+        K1, K2 = tf_session.run([kern.K(next), kern.K(next, next2)])
         import pylab as plt
         plt.imshow(K1)
+        plt.colorbar()
         plt.show()
         plt.imshow(K2)
+        plt.colorbar()
         plt.show()
 
-        np.linalg.cholesky(K2 + 1e-6*np.eye(K2.shape[-1]))
+        # np.linalg.cholesky(K2 + 1e-6*np.eye(K2.shape[-1]))
 
-        assert np.all(np.isclose(K1, K2))
+        # assert np.all(np.isclose(K1, K2))
 
         # kern_ff = DTECFrozenFlow(variance=0.07,velocity=[0., 0., 0.],lengthscales=5., fed_kernel='RBF',obs_type='DDTEC',resolution=5, squeeze=False)
         # tf_session.run([init, init2])
@@ -702,7 +710,7 @@ def test_hmc_matrix_stepsizes(tf_session):
 
         X = tf.cast(tf.linspace(0.,10.,100), float_type)[:,None]
 
-        kern = tfp.positive_semidefinite_kernels.MaternOneHalf(amplitude=tf.convert_to_tensor(1.,float_type),
+        kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=tf.convert_to_tensor(1.,float_type),
                                                                length_scale=tf.convert_to_tensor(1.,float_type),
                                                                feature_ndims=1)
         K = kern.matrix(X, X)
@@ -712,18 +720,20 @@ def test_hmc_matrix_stepsizes(tf_session):
         Ytrue = tf.sin(Ftrue*invfreqs)
         Y = Ytrue + 0.3*tf.random_normal(shape=tf.shape(Ytrue),dtype=float_type)
 
-        outliers = np.zeros((100,24))
-        outliers[np.random.choice(100,size=10,replace=False),1:-1] = 3.
+        outliers = np.zeros((100, 24))
+        outliers[np.random.choice(100, size=10, replace=False),1:-1] = 3.
         Y += tf.constant(outliers, float_type)
         Ytrue_cos = tf.cos(Ftrue * invfreqs)
         Y_cos = Ytrue_cos + 0.3 * tf.random_normal(shape=tf.shape(Ytrue_cos), dtype=float_type)
 
+        a = tf.Variable(0., dtype=float_type)
+        l = tf.Variable(0., dtype=float_type)
 
-        def logp(y_sigma, f, a, l):
+        def logp(y_sigma, f):
             # l = tf.get_variable('l', initializer=lambda: tf.constant(0., dtype=float_type))
             # a = tf.get_variable('a', initializer=lambda: tf.constant(0., dtype=float_type))
-            kern = tfp.positive_semidefinite_kernels.MaternOneHalf(amplitude=2. * tf.exp(a[0]),
-                                                                   length_scale=2. * tf.exp(l[0]),
+            kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=2. * tf.exp(a),
+                                                                   length_scale=2. * tf.exp(l),
                                                                    feature_ndims=1)
             K = kern.matrix(X, X)
             L = tf.cholesky(K + diagonal_jitter(tf.shape(K)[0]))
@@ -742,31 +752,13 @@ def test_hmc_matrix_stepsizes(tf_session):
             # logp.set_shape(tf.TensorShape([]))
             return logp
 
-        step_size = [tf.get_variable(
-                        name='y_sigma_step_size',
-                        initializer=lambda: tf.constant(0.0001, dtype=float_type),
+        step_size = tf.get_variable(
+                        name='step_size',
+                        initializer=lambda: tf.constant(0.001, dtype=float_type),
                         use_resource=True,
                         dtype=float_type,
                         trainable=False),
-                    tf.get_variable(
-                        name='L_step_size',
-                        initializer=lambda: tf.constant(0.003, dtype=float_type),#tf.linalg.inv(L),
-                        use_resource=True,
-                        dtype=float_type,
-                        trainable=False),
-                    tf.get_variable(
-                        name='a_step_size',
-                        initializer=lambda: tf.constant(0.003, dtype=float_type),  # tf.linalg.inv(L),
-                        use_resource=True,
-                        dtype=float_type,
-                        trainable=False),
-                    tf.get_variable(
-                        name='l_step_size',
-                        initializer=lambda: tf.constant(0.003, dtype=float_type),  # tf.linalg.inv(L),
-                        use_resource=True,
-                        dtype=float_type,
-                        trainable=False)
-                    ]
+
 
         hmc = tfp.mcmc.HamiltonianMonteCarlo(
             target_log_prob_fn=logp,
@@ -777,7 +769,7 @@ def test_hmc_matrix_stepsizes(tf_session):
             state_gradients_are_stopped=True)
         #                         step_size_update_fn=lambda v, _: v)
 
-        q0 = [tf.constant([0.01],float_type), 0.*Ftrue[None, :, 0],tf.constant([0.0],float_type),tf.constant([0.0],float_type)]
+        q0 = [tf.constant([0.01],float_type), 0.*Ftrue[None, :, 0]]
 
         # Run the chain (with burn-in).
         samples, kernel_results = tfp.mcmc.sample_chain(
@@ -792,19 +784,31 @@ def test_hmc_matrix_stepsizes(tf_session):
         posterior_log_prob = tf.reduce_mean(kernel_results.accepted_results.target_log_prob,
                                                        name='marginal_log_likelihood')
 
-        saem_opt = posterior_log_prob#tf.train.AdamOptimizer(1e-3).minimize(-posterior_log_prob,var_list=[a,l])
-
-
+        saem_opt = tf.train.AdamOptimizer(1e-3).minimize(-posterior_log_prob,var_list=[a,l])
 
         tf_session.run(tf.global_variables_initializer())
+        for i in range(100):
+            _, loss = tf_session.run([saem_opt, posterior_log_prob])
+            print(i, loss)
 
-        samples = [samples[0], tf.einsum("ab,scb->sca", L, samples[1])[..., None], 2.*tf.exp(samples[2]), 2.*tf.exp(samples[3])]
+
+
+
+
+        with tf.control_dependencies([saem_opt]):
+            kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=2. * tf.exp(a),
+                                                                            length_scale=2. * tf.exp(l),
+                                                                            feature_ndims=1)
+            K = kern.matrix(X, X)
+            L = tf.cholesky(K + diagonal_jitter(tf.shape(K)[0]))
+
+        samples = [samples[0], tf.einsum("ab,snb->sna", L, samples[1])[...,None], 2.*tf.exp(a), 2.*tf.exp(l)]
 
 
         invfreqs,times, logp0, Y, Ytrue, Ftrue, samples,step_sizes, ess, chain_logp = tf_session.run(
             [invfreqs, X[:,0], logp(*q0),Y,Ytrue,Ftrue,samples,
               kernel_results.extra.step_size_assign,
-              tfp.mcmc.effective_sample_size(samples),
+              tfp.mcmc.effective_sample_size(samples[0:2]),
               tf.reduce_mean(kernel_results.accepted_results.target_log_prob,name='marginal_log_likelihood')])
         print(logp0)
         print(chain_logp)
@@ -833,8 +837,8 @@ def test_hmc_matrix_stepsizes(tf_session):
         ax3.legend()
         ax3.set_title("Data space solution vs data")
 
-        sns.kdeplot(samples[2].flatten(), ax=ax4,shade=True, alpha=0.5)
-        sns.kdeplot(samples[3].flatten(), ax=ax4, shade=True, alpha=0.5)
+        print(samples[2:4])
+        sns.kdeplot(samples[0].flatten(), ax=ax4,shade=True, alpha=0.5)
         # ax4.plot(step_sizes[0], label='y_sigma stepsize')
         # ax4.plot(step_sizes[1], label='dtec stepsize')
         # ax4.set_yscale("log")

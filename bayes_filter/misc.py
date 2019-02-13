@@ -7,6 +7,24 @@ from timeit import default_timer
 from .odeint import odeint
 
 
+def random_sample(t, n=None):
+    """
+    Randomly draw `n` slices from `t`.
+
+    :param t: float_type, tf.Tensor, [M, ...]
+        Tensor to draw from
+    :param n: tf.int32
+        number of slices to draw. None means shuffle.
+    :return: float_type, tf.Tensor, [n, ...]
+        The randomly sliced tensor.
+    """
+    if n is None:
+        n = tf.shape(t)[0]
+    n = tf.minimum(n, tf.shape(t)[0])
+    idx = tf.random_shuffle(tf.range(n))
+    return tf.gather(t, idx, axis=0)
+
+
 def K_parts(kern, X_list, X_dims_list):
     L = len(X_list)
     if len(X_dims_list) != L:

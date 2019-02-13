@@ -75,6 +75,7 @@ def simulated_ddtec(tf_session, lofar_array):
 
 if __name__ == '__main__':
     from tensorflow.python import debug as tf_debug
+    import pylab as plt
     sess = tf.Session(graph=tf.Graph())
     # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
     with sess.graph.as_default():
@@ -86,12 +87,20 @@ if __name__ == '__main__':
             simulated_ddtec.coord_feed,
             simulated_ddtec.star_coord_feed)
 
-        filtered_res, inits = free_transition.filter_step(num_samples=20, num_chains=1, parallel_iterations=1, num_leapfrog_steps=5,
-                               target_rate=0.5, num_burnin_steps=0,num_saem_samples=12,saem_steps=13,saem_learning_rate=0.1)
+        filtered_res, inits = free_transition.filter_step(
+            num_samples=1000, parallel_iterations=10, num_leapfrog_steps=5,target_rate=0.5,
+            num_burnin_steps=100,num_saem_samples=1000,saem_learning_rate=1.,
+            init_kern_params={'variance':0.07,'y_sigma':0.01})
         sess.run(inits)
         cont = True
         while cont:
             res = sess.run(filtered_res)
+            plt.plot(res.step_sizes)
+            plt.show()
+            plt.hist(res.ess.flatten(),bins=100)
+            plt.show()
+            plt.plot(res.Y_real[1,...].flatten() - res.extra.Y_real_data.flatten())
+            plt.show()
             # print(res)
             cont = res.cont
 

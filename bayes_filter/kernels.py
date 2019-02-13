@@ -800,24 +800,24 @@ class DTECIsotropicTimeGeneral(object):
     allowed_obs_type = ['TEC', 'DTEC', 'DDTEC']
 
     def __init__(self, variance=0.1, lengthscales=10.0,
-                 a=250., b=50., resolution=10, timescale=30.,
+                 a=250., b=50.,  timescale=30., resolution=10,
                  fed_kernel='RBF', obs_type='TEC', squeeze=True):
-        if obs_type not in DTECIsotropicTime.allowed_obs_type:
+        if obs_type not in DTECIsotropicTimeGeneral.allowed_obs_type:
             raise ValueError(
-                "{} is an invalid obs_type. Must be in {}.".format(obs_type, DTECIsotropicTime.allowed_obs_type))
+                "{} is an invalid obs_type. Must be in {}.".format(obs_type, DTECIsotropicTimeGeneral.allowed_obs_type))
         self.obs_type = obs_type
         self.squeeze = squeeze
 
         if not isinstance(variance, Parameter):
-            variance = Parameter(bijector=ScaledPositiveBijector(0.1), constrained_value=variance, shape=(-1,))
+            variance = Parameter(bijector=ScaledPositiveBijector(0.1), constrained_value=variance, shape=(-1,1))
         if not isinstance(lengthscales, Parameter):
-            lengthscales = Parameter(bijector=ScaledPositiveBijector(10.), constrained_value=lengthscales, shape=(-1,))
+            lengthscales = Parameter(bijector=ScaledPositiveBijector(10.), constrained_value=lengthscales, shape=(-1,1))
         if not isinstance(timescale, Parameter):
-            timescale = Parameter(bijector=ScaledPositiveBijector(50.), constrained_value=timescale, shape=(-1,))
+            timescale = Parameter(bijector=ScaledPositiveBijector(50.), constrained_value=timescale, shape=(-1,1))
         if not isinstance(a, Parameter):
-            a = Parameter(bijector=ScaledPositiveBijector(250.), constrained_value=a, shape=(-1,))
+            a = Parameter(bijector=ScaledPositiveBijector(250.), constrained_value=a, shape=(-1,1))
         if not isinstance(b, Parameter):
-            b = Parameter(bijector=ScaledPositiveBijector(100.), constrained_value=b, shape=(-1,))
+            b = Parameter(bijector=ScaledPositiveBijector(100.), constrained_value=b, shape=(-1,1))
 
         self.variance = variance
         self.lengthscales = lengthscales
@@ -827,28 +827,28 @@ class DTECIsotropicTimeGeneral(object):
 
         if fed_kernel in ["RBF", "SE"]:
             fed_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
-                amplitude=self.variance.constrained_value,
-                length_scale=self.lengthscales.constrained_value)
+                amplitude=self.variance.constrained_value[:,0],
+                length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
-                length_scale=self.timescale.constrained_value)
+                length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["M32"]:
             fed_kernel = tfp.positive_semidefinite_kernels.MaternThreeHalves(
-                amplitude=self.variance.constrained_value,
-                length_scale=self.lengthscales.constrained_value)
+                amplitude=self.variance.constrained_value[:,0],
+                length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternThreeHalves(
-                length_scale=self.timescale.constrained_value)
+                length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["M52"]:
             fed_kernel = tfp.positive_semidefinite_kernels.MaternFiveHalves(
-                amplitude=self.variance.constrained_value,
-                length_scale=self.lengthscales.constrained_value)
+                amplitude=self.variance.constrained_value[:,0],
+                length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternFiveHalves(
-                length_scale=self.timescale.constrained_value)
+                length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["M12", "OU"]:
             fed_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
-                amplitude=self.variance.constrained_value,
-                length_scale=self.lengthscales.constrained_value)
+                amplitude=self.variance.constrained_value[:,0],
+                length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
-                length_scale=self.timescale.constrained_value)
+                length_scale=self.timescale.constrained_value[:,0])
         self.fed_kernel = fed_kernel
         self.time_kernel = time_kernel
 
@@ -874,12 +874,12 @@ class DTECIsotropicTimeGeneral(object):
         sec = tf.reciprocal(directions[:, 2], name='secphi')
 
         # num_chains, N
-        bsec = sec * self.b.constrained_value[:, None]
+        bsec = sec * self.b.constrained_value
 
         # num_chains, N
         ds = bsec / tf.cast(self.resolution - 1, float_type)
         # num_chains, N
-        sm = sec[None, :] * (self.a.constrained_value[:, None] - antennas[:, 2]) - 0.5 * bsec
+        sm = sec[None, :] * (self.a.constrained_value - antennas[:, 2]) - 0.5 * bsec
         # num_chains, N
         sp = sm + bsec
         # sec * (self.a.constrained_value - antennas[:, 2]) + 0.5 * sec * self.b.constrained_value
@@ -931,7 +931,7 @@ class DTECIsotropicTimeGeneral(object):
         y1, ds1 = self._calculate_rays(X)
         shape1 = tf.shape(y1)
         # num_chains, res1 N', 3
-        y1 = tf.reshape(y1, tf.concat([tf.shape(y1)[0:1], [-1, 3]], axis=0))
+        y1 = tf.reshape(y1, tf.concat([shape1[0:1], [-1, 3]], axis=0))
 
         if X2 is None:
             sym = True
@@ -945,19 +945,21 @@ class DTECIsotropicTimeGeneral(object):
             times2 = X2[:, 0:1]
             Np = tf.shape(X2)[0]
             if self.obs_type == 'DTEC':
-                X2 = tf.concat([bring_together(X2, [slice(0, 7, 1)]),
-                                bring_together(X2, [slice(0, 4, 1), slice(7, 10, 1)])],
-                               axis=0)
+                X2 = tf.concat([bring_together(X2, [slice(0, 7, 1)]),  # i,alpha
+                               bring_together(X2, [slice(0, 4, 1), slice(7, 10, 1)])],  # i0,alpha
+                              axis=0)
             if self.obs_type == 'DDTEC':
-                X2 = tf.concat([bring_together(X2, [slice(0, 7, 1)]),
-                                bring_together(X2, [slice(0, 4, 1), slice(7, 10, 1)]),
-                                bring_together(X2, [slice(0, 1, 1), slice(10, 13, 1), slice(7, 10, 1)])],
-                               axis=0)
+                X2 = tf.concat([bring_together(X2, [slice(0, 7, 1)]),  # i,alpha
+                               bring_together(X2, [slice(0, 4, 1), slice(7, 10, 1)]),  # i0, alpha
+                               bring_together(X2, [slice(0, 1, 1), slice(10, 13, 1), slice(7, 10, 1)]),  # i0,alpha0
+                               bring_together(X2, [slice(0, 1, 1), slice(10, 13, 1), slice(4, 7, 1)])  # i,alpha0
+                               ],
+                              axis=0)
             # num_chains, res2, Np', 3
-            y2, ds2 = self._calculate_rays(X)
+            y2, ds2 = self._calculate_rays(X2)
             shape2 = tf.shape(y2)
             # num_chains, res2 Np', 3
-            y2 = tf.reshape(y2, tf.concat([tf.shape(y2)[0:1], [-1, 3]], axis=0))
+            y2 = tf.reshape(y2, tf.concat([shape2[0:1], [-1, 3]], axis=0))
 
         # num_chains, N', Np'
         ds1ds2 = ds1[:, :, None] * ds2[:, None, :]
@@ -986,8 +988,8 @@ class DTECIsotropicTimeGeneral(object):
                                       4 * tf.reduce_sum(K[:, 1:-1, :, 1:-1, :], axis=[1, 3])])
         if self.obs_type == 'TEC':
             result = K_time * I
-            if sym:
-                result = 0.5 * (tf.transpose(result, (0,2,1)) + result)
+            # if sym:
+            #     result = 0.5 * (tf.transpose(result, (0,2,1)) + result)
             if self.squeeze:
                 return tf.squeeze(result)
             else:
@@ -995,7 +997,7 @@ class DTECIsotropicTimeGeneral(object):
         if self.obs_type == 'DTEC':
             n = 2
         if self.obs_type == 'DDTEC':
-            n = 3
+            n = 4
         out = []
         # if sym:
         #     def _sym(t):
@@ -1009,11 +1011,12 @@ class DTECIsotropicTimeGeneral(object):
         # else:
         for i in range(n):
             for j in range(n):
-                out.append(I[:,i*N:(i+1)*N, j*Np:(j+1)*Np])
-        result = K_time * tf.add_n(out)
+                out.append(-1**(i+j) * I[:,  i*N:(i+1)*N, j*Np:(j+1)*Np])
+        with tf.control_dependencies([tf.print(tf.shape(I),tf.shape(K))]):
+            result = K_time * tf.add_n(out)
 
-        if sym:
-            result = 0.5 * (tf.transpose(result, (0, 2, 1)) + result)
+        # if sym:
+        #     result = 0.5 * (tf.transpose(result, (0, 2, 1)) + result)
         if self.squeeze:
             return tf.squeeze(result)
         else:
