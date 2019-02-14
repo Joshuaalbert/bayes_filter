@@ -331,41 +331,70 @@ class FreeTransitionSAEM(object):
 
         def saem_step(variables):
             var_copy = tf.identity(variables)
-            target = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
-                                     fed_kernel='RBF', obs_type='DDTEC',
-                                     variables=var_copy, full_posterior=True)
-
-            hmc = tfp.mcmc.HamiltonianMonteCarlo(
-                target_log_prob_fn=target.logp,
-                num_leapfrog_steps=num_leapfrog_steps,  # tf.random_shuffle(tf.range(3,60,dtype=tf.int64))[0],
-                step_size=step_sizes,
-                step_size_update_fn=tfp.mcmc.make_simple_step_size_update_policy(num_adaptation_steps=None,
-                                                                                 decrement_multiplier=0.1,
-                                                                                 increment_multiplier=0.1,
-                                                                                 target_rate=target_rate),
-                state_gradients_are_stopped=True)
-
-            # Run the chain (with burn-in).
-            unconstrained_samples, kernel_results = tfp.mcmc.sample_chain(
-                num_results=num_saem_samples,
-                num_burnin_steps=num_burnin_steps,
-                current_state=q0_init,
-                kernel=hmc,
-                parallel_iterations=parallel_iterations)
-
-            unconstrained_samples = tf.stop_gradient(flatten_batch_dims(unconstrained_samples[0]))
-
-            constrained_samples = target.transform_samples(unconstrained_samples)
-
-            mean_dtec = tf.reduce_mean(constrained_samples,axis=0)
-            var_dtec = tf.reduce_mean(tf.square(constrained_samples), axis=0) - tf.square(mean_dtec)
-            mean_variance = tf.reduce_mean(var_dtec)
+            # target = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
+            #                          fed_kernel='RBF', obs_type='DDTEC',
+            #                          variables=var_copy, full_posterior=True)
+            #
+            # hmc = tfp.mcmc.HamiltonianMonteCarlo(
+            #     target_log_prob_fn=target.logp,
+            #     num_leapfrog_steps=num_leapfrog_steps,  # tf.random_shuffle(tf.range(3,60,dtype=tf.int64))[0],
+            #     step_size=step_sizes,
+            #     step_size_update_fn=tfp.mcmc.make_simple_step_size_update_policy(num_adaptation_steps=None,
+            #                                                                      decrement_multiplier=0.1,
+            #                                                                      increment_multiplier=0.1,
+            #                                                                      target_rate=target_rate),
+            #     state_gradients_are_stopped=True)
+            #
+            # # Run the chain (with burn-in).
+            # unconstrained_samples, kernel_results = tfp.mcmc.sample_chain(
+            #     num_results=num_saem_samples,
+            #     num_burnin_steps=num_burnin_steps,
+            #     current_state=q0_init,
+            #     kernel=hmc,
+            #     parallel_iterations=parallel_iterations)
+            #
+            # unconstrained_samples = tf.stop_gradient(flatten_batch_dims(unconstrained_samples[0]))
+            #
+            # constrained_samples = target.transform_samples(unconstrained_samples)
+            #
+            # mean_dtec = tf.reduce_mean(constrained_samples,axis=0)
+            # var_dtec = tf.reduce_mean(tf.square(constrained_samples), axis=0) - tf.square(mean_dtec)
+            # mean_variance = tf.reduce_mean(var_dtec)
 
             def log_prob(variables):
 
                 target_saem = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
                                               fed_kernel='RBF', obs_type='DDTEC',
                                               variables=variables)
+
+                ###
+                hmc = tfp.mcmc.HamiltonianMonteCarlo(
+                    target_log_prob_fn=target.logp,
+                    num_leapfrog_steps=num_leapfrog_steps,  # tf.random_shuffle(tf.range(3,60,dtype=tf.int64))[0],
+                    step_size=step_sizes,
+                    step_size_update_fn=tfp.mcmc.make_simple_step_size_update_policy(num_adaptation_steps=None,
+                                                                                     decrement_multiplier=0.1,
+                                                                                     increment_multiplier=0.1,
+                                                                                     target_rate=target_rate),
+                    state_gradients_are_stopped=True)
+
+                # Run the chain (with burn-in).
+                unconstrained_samples, kernel_results = tfp.mcmc.sample_chain(
+                    num_results=num_saem_samples,
+                    num_burnin_steps=num_burnin_steps,
+                    current_state=q0_init,
+                    kernel=hmc,
+                    parallel_iterations=parallel_iterations)
+
+                unconstrained_samples = tf.stop_gradient(flatten_batch_dims(unconstrained_samples[0]))
+
+                constrained_samples = target.transform_samples(unconstrained_samples)
+
+                mean_dtec = tf.reduce_mean(constrained_samples, axis=0)
+                var_dtec = tf.reduce_mean(tf.square(constrained_samples), axis=0) - tf.square(mean_dtec)
+                mean_variance = tf.reduce_mean(var_dtec)
+                ###
+
                 with tf.control_dependencies([tf.print(target_saem.constrained_states(variables))]):
                     return target_saem.logp_dtec(mean_dtec, mean_variance) \
                            + tf.reduce_mean(target_saem.logp_gains(constrained_samples)) \

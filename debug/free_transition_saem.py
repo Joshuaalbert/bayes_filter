@@ -107,8 +107,8 @@ if __name__ == '__main__':
             simulated_ddtec.star_coord_feed)
 
         filtered_res, inits = free_transition.filter_step(
-            num_samples=1000, parallel_iterations=10, num_leapfrog_steps=3,target_rate=0.6,
-            num_burnin_steps=100,num_saem_samples=100,saem_bfgs_maxsteps=1,initial_stepsize=7e-3,
+            num_samples=1000, num_chains=1,parallel_iterations=10, num_leapfrog_steps=3,target_rate=0.6,
+            num_burnin_steps=10,num_saem_samples=100,saem_bfgs_maxsteps=5,initial_stepsize=7e-3,
             init_kern_params={'variance':1e-4,'y_sigma':0.2,'lengthscales':15.,'timescale':50.})
         sess.run(inits)
         cont = True
