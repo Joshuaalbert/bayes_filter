@@ -284,12 +284,13 @@ class DTECToGainsSAEM(Target):
                                       ['y_sigma', 'variance', 'lengthscales', 'a', 'b', 'timescale'])
 
     def __init__(self, X, Xstar, Y_real, Y_imag, freqs,
-                 y_sigma=0.2, variance=0.07, lengthscales=10.0,
+                 y_sigma=0.2, variance=5e-4, lengthscales=15.0,
                  a=250., b=50., timescale=30.,  resolution=3,
-                 fed_kernel = 'RBF', obs_type='DDTEC', variables=None):
+                 fed_kernel = 'RBF', obs_type='DDTEC', variables=None, full_posterior=True):
 
         self.obs_type = obs_type
         self.fed_kernel = fed_kernel
+        self.full_posterior = full_posterior
         # self.num_chains = num_chains
 
         initial_values = DTECToGainsSAEM.DTECToGainsParams(
@@ -299,8 +300,8 @@ class DTECToGainsSAEM(Target):
 
         bijectors = DTECToGainsSAEM.DTECToGainsParams(
             ScaledLowerBoundedBijector(1e-2,0.2),
-            ScaledLowerBoundedBijector(1e-3,0.1),
-            ScaledLowerBoundedBijector(3., 10.),
+            ScaledLowerBoundedBijector(1e-5,1e-5),
+            ScaledLowerBoundedBijector(3., 15.),
             ScaledLowerBoundedBijector(100.,100.),
             ScaledLowerBoundedBijector(30.,100.),
             ScaledLowerBoundedBijector(10.,50.))
@@ -327,10 +328,15 @@ class DTECToGainsSAEM(Target):
         #N, ndims
         self.X = X
         self.N = tf.shape(self.X)[0]
-        #Ns, ndims
-        self.Xstar = Xstar
-        self.Ns = tf.shape(self.Xstar)[0]
-        self.Xconcat = tf.concat([self.X, self.Xstar],axis=0)
+        if Xstar is not None:
+            #Ns, ndims
+            self.Xstar = Xstar
+            self.Ns = tf.shape(self.Xstar)[0]
+            self.Xconcat = tf.concat([self.X, self.Xstar],axis=0)
+        else:
+            self.Xstar = None
+            self.Ns = 0
+            self.Xconcat = self.X
         self.Nh = tf.shape(self.Xconcat)[0]
         #N, Nf
         self.Y_real = Y_real
@@ -350,9 +356,12 @@ class DTECToGainsSAEM(Target):
             obs_type=self.obs_type,
             squeeze=True)
 
+        # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
+
 
         # N+Ns, N+Ns
         K = kern.K(self.Xconcat)
+        # K = kern.matrix(self.Xconcat[:, 4:7],self.Xconcat[:, 4:7])
         # with tf.control_dependencies([tf.print("asserting initial K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
         # N+Ns, N+Ns
         self.L = tf.cholesky(K + diagonal_jitter(self.Nh))
@@ -373,11 +382,48 @@ class DTECToGainsSAEM(Target):
         """
 
         # transform
-        # S, num_chains, N+Ns
+        # S, N+Ns
         dtec_transformed = tf.matmul(dtec, self.L, transpose_b=True)#tf.einsum("ab,sb->sa",self.L, dtec)
 
         return dtec_transformed
 
+    def logp_dtec(self, constrained_dtec, dtec_variance):
+        """
+        Calculate log N[dtec | 0, L L^T] = -0.5*(B dtec)^T L^-T L^-1 B dtec - |L| - 0.5*D*log(2*pi)
+        :param constrained_dtec: float_type, tf.Tensor [M]
+            DTEC constrained
+        :return: float_type, tf.Tensor, scalar
+        """
+        num_dims = tf.cast(tf.shape(constrained_dtec)[0], float_type)
+        alpha = tf.matrix_triangular_solve(self.L+tf.eye(tf.shape(constrained_dtec)[0], dtype=float_type)*dtec_variance,
+                                           constrained_dtec[:,None],lower=True)
+        logp = - 0.5 * tf.reduce_sum(tf.square(alpha))
+        logp -= 0.5 * num_dims * np.log(2 * np.pi)
+        logp -= tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)))
+        return logp
+
+    def logp_gains(self, constrained_dtec):
+        """
+        Get log Prob(gains | dtec)
+
+        :param constrained_dtec: float_type, tf.Tensor, [S, M]
+            Cosntrained dtec
+        :return: float_type, tf.Tensor, scalar
+            The log probability
+        """
+        # marginal
+        # S, N
+        dtec_marginal = constrained_dtec[:, :self.N]
+        # S, N, Nf
+        g_real, g_imag = self.forward_equation(dtec_marginal)
+        likelihood_real = tfp.distributions.Laplace(loc=g_real, scale=self.state.y_sigma.constrained_value[:, :, None])
+        likelihood_imag = tfp.distributions.Laplace(loc=g_imag, scale=self.state.y_sigma.constrained_value[:, :, None])
+
+        # S
+        logp = tf.reduce_sum(likelihood_real.log_prob(self.Y_real[None, :, :]), axis=[1, 2]) + \
+               tf.reduce_sum(likelihood_imag.log_prob(self.Y_imag[None, :, :]), axis=[1, 2])
+
+        return logp
 
     def get_initial_point(self, dtec):
         """
@@ -423,20 +469,11 @@ class DTECToGainsSAEM(Target):
 
         # transform
         # num_chains, N+Ns
-        dtec_transformed = tf.matmul(dtec, self.L, transpose_b=True)#tf.einsum('ab,nb->na',self.L, dtec)
+        dtec_transformed = self.transform_samples(dtec)#tf.einsum('ab,nb->na',self.L, dtec)
 
-        #marginal
-        #num_chains, N
-        dtec_marginal = dtec_transformed[:, :self.N]
-        # num_chains, N, Nf
-        g_real, g_imag = self.forward_equation(dtec_marginal)
-        likelihood_real = tfp.distributions.Laplace(loc=g_real, scale=self.state.y_sigma.constrained_value[:, :, None])
-        likelihood_imag = tfp.distributions.Laplace(loc=g_imag, scale=self.state.y_sigma.constrained_value[:, :, None])
-
+        #marginal logprob
         # num_chains
-        logp = tf.reduce_sum(likelihood_real.log_prob(self.Y_real[None, :, :]), axis=[1, 2]) + \
-               tf.reduce_sum(likelihood_imag.log_prob(self.Y_imag[None, :, :]), axis=[1, 2])
-
+        logp = self.logp_gains(dtec_transformed)
         # dtec_prior = tfp.distributions.MultivariateNormalDiag(loc=None,scale_identity_multiplier=None)
         # num_chains
         #[1]
@@ -445,9 +482,9 @@ class DTECToGainsSAEM(Target):
         dtec_logp = -0.5*tf.reduce_sum(tf.square(dtec),axis=1)# - logdet - 0.5*tf.cast(self.N+self.Ns, float_type)*np.log(2*np.pi)
 
         #print(logp, dtec_logp)
-        res = logp + dtec_logp# + sum([p.constrained_prior.log_prob(s) for (p,s) in zip(self.parameters, state)])
+        if self.full_posterior:
+            res = logp + dtec_logp# + sum([p.constrained_prior.log_prob(s) for (p,s) in zip(self.parameters, state)])
+        else:
+            res = logp
 
         return res
-
-
-

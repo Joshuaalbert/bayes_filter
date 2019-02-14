@@ -529,12 +529,14 @@ def test_isotropic_time_general(tf_session, lofar_array):
         Xd = tf.concat([ra, dec], axis=1)
         Xa = tf.constant(np.concatenate([lofar_array[1][0:1, :], lofar_array[1]], axis=0), dtype=float_type)
         coord_feed2 = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
+        dim_feed = CoordinateDimFeed(coord_feed)
         init2, next2 = init_feed(coord_feed2)
+        init3, next3 = init_feed(dim_feed)
 
-        kern = DTECIsotropicTimeGeneral(variance=0.01,timescale=30.,lengthscales=20., a=250., b=100., fed_kernel='RBF',obs_type='DDTEC',resolution=3, squeeze=True)
+        kern = DTECIsotropicTimeGeneral(variance=5e-4,timescale=30.,lengthscales=20., a=250., b=100., fed_kernel='RBF',obs_type='DDTEC',resolution=3, squeeze=True)
 
-        tf_session.run([init, init2])
-        K1, K2 = tf_session.run([kern.K(next), kern.K(next, next2)])
+        tf_session.run([init, init2, init3])
+        K1, K2, dims = tf_session.run([kern.K(next), kern.K(next, next2), next3])
         import pylab as plt
         plt.imshow(K1)
         plt.colorbar()
@@ -543,7 +545,11 @@ def test_isotropic_time_general(tf_session, lofar_array):
         plt.colorbar()
         plt.show()
 
-        np.linalg.cholesky(K1 + 1e-6*np.eye(K1.shape[-1]))
+        L = np.linalg.cholesky(K1 + 1e-6*np.eye(K1.shape[-1]))
+        ddtecs = np.einsum("ab,bc->ac",L, np.random.normal(size=L.shape)).reshape(list(dims)+[L.shape[0]])
+        print(ddtecs[:,:,51].var(), 0.01**2/ddtecs[:,:,51].var())
+
+
 
         # assert np.all(np.isclose(K1, K2))
 

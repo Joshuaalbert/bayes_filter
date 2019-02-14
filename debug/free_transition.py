@@ -48,7 +48,7 @@ def simulated_ddtec(tf_session, lofar_array):
                 init, next = init_feed(coord_feed)
                 init_cont, cont = init_feed(cont_feed)
                 tf_session.run([init, init_cont])
-                kern = DTECIsotropicTimeGeneral(variance=0.07,timescale=30.,lengthscales=15., a=250., b=50.,
+                kern = DTECIsotropicTimeGeneral(variance=5e-4,timescale=30.,lengthscales=15., a=250., b=50.,
                                          fed_kernel='RBF',obs_type='DDTEC',resolution=5, squeeze=True)
                 from timeit import default_timer
                 t0 = default_timer()
