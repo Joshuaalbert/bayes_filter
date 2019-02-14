@@ -1002,7 +1002,9 @@ class DTECIsotropicTimeGeneral(object):
         for i in range(n):
             for j in range(n):
                 out.append((1. if (i + j) % 2 == 0 else -1.) * I[:, i * N:(i + 1) * N, j * Np:(j + 1) * Np])
-        with tf.control_dependencies([tf.print(tf.shape(I),tf.shape(K))]):
+        with tf.control_dependencies([tf.print(self.variance.constrained_value, self.a.constrained_value,
+                                               self.b.constrained_value, self.lengthscales.constrained_value,
+                                               self.timescale.constrained_value)]):
             result = K_time * tf.add_n(out)
 
         # if sym:

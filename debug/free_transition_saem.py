@@ -88,9 +88,9 @@ if __name__ == '__main__':
             simulated_ddtec.star_coord_feed)
 
         filtered_res, inits = free_transition.filter_step(
-            num_samples=1000, parallel_iterations=10, num_leapfrog_steps=5,target_rate=0.5,
+            num_samples=1000, parallel_iterations=10, num_leapfrog_steps=5,target_rate=0.6,
             num_burnin_steps=100,num_saem_samples=1000,saem_learning_rate=1.,
-            init_kern_params={'variance':0.07,'y_sigma':0.01})
+            init_kern_params={'variance':0.07,'y_sigma':0.01,'lengthscales':15.})
         sess.run(inits)
         cont = True
         while cont:

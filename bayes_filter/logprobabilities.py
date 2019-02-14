@@ -5,6 +5,7 @@ from .parameters import Parameter, ScaledPositiveBijector, ConstrainedBijector, 
 from collections import namedtuple
 from .misc import diagonal_jitter, log_normal_solve_fwhm, K_parts
 from .settings import float_type
+import numpy as np
 
 def constrained_scaled_positive(a,b,scale):
     return tfp.bijectors.Chain([ConstrainedBijector(a,b),ScaledPositiveBijector(scale)])
@@ -441,7 +442,7 @@ class DTECToGainsSAEM(Target):
         #[1]
         logdet = tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)), axis=0, keepdims=True)
         # dtec_logp = dtec_prior.log_prob(dtec) - logdet
-        dtec_logp = -0.5*tf.reduce_sum(tf.square(dtec),axis=1) - logdet # - 0.5*(self.N+self.Ns)*np.log(2*np.pi)
+        dtec_logp = -0.5*tf.reduce_sum(tf.square(dtec),axis=1)# - logdet - 0.5*tf.cast(self.N+self.Ns, float_type)*np.log(2*np.pi)
 
         #print(logp, dtec_logp)
         res = logp + dtec_logp# + sum([p.constrained_prior.log_prob(s) for (p,s) in zip(self.parameters, state)])

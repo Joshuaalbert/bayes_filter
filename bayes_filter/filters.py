@@ -272,40 +272,63 @@ class FreeTransitionSAEM(object):
         target = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
                                  fed_kernel='RBF', obs_type='DDTEC',
                                  **init_kern_params)
+        variables = target.variables
         inits = tf.group([step_size.initializer for step_size in step_sizes]
                          + [joint_iterator.initializer] + [target.variables.initializer])
         q0_init = target.get_initial_point(dtec_init)
         q0_init = [tf.tile(tf.reshape(q0_init, (-1,))[None, :], (num_chains, 1))]
-        q0_init = [tf.Variable(q0_init[0], dtype=float_type, name='dtec_init')]
+        # q0_init = [tf.Variable(q0_init[0], dtype=float_type, name='dtec_init')]
 
-        def saem_step():
+        def saem_step(variables):
+            var_copy = tf.identity(variables)
             target = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
                                      fed_kernel='RBF', obs_type='DDTEC',
-                                     **init_kern_params)
+                                     variables=var_copy)
 
-        hmc = tfp.mcmc.HamiltonianMonteCarlo(
-            target_log_prob_fn=target.logp,
-            num_leapfrog_steps=num_leapfrog_steps,  # tf.random_shuffle(tf.range(3,60,dtype=tf.int64))[0],
-            step_size=step_sizes,
-            step_size_update_fn=tfp.mcmc.make_simple_step_size_update_policy(num_adaptation_steps=None,
-                                                                             decrement_multiplier=0.1,
-                                                                             increment_multiplier=0.1,
-                                                                             target_rate=target_rate),
-            state_gradients_are_stopped=True)
-        #                         step_size_update_fn=lambda v, _: v)
+            hmc = tfp.mcmc.HamiltonianMonteCarlo(
+                target_log_prob_fn=target.logp,
+                num_leapfrog_steps=num_leapfrog_steps,  # tf.random_shuffle(tf.range(3,60,dtype=tf.int64))[0],
+                step_size=step_sizes,
+                step_size_update_fn=tfp.mcmc.make_simple_step_size_update_policy(num_adaptation_steps=None,
+                                                                                 decrement_multiplier=0.1,
+                                                                                 increment_multiplier=0.1,
+                                                                                 target_rate=target_rate),
+                state_gradients_are_stopped=True)
 
-        # Run the chain (with burn-in).
-        unconstrained_samples, kernel_results = tfp.mcmc.sample_chain(
-            num_results=num_saem_samples,
-            num_burnin_steps=num_burnin_steps,
-            current_state=q0_init,
-            kernel=hmc,
-            parallel_iterations=parallel_iterations)
+            # Run the chain (with burn-in).
+            unconstrained_samples, kernel_results = tfp.mcmc.sample_chain(
+                num_results=num_saem_samples,
+                num_burnin_steps=num_burnin_steps,
+                current_state=q0_init,
+                kernel=hmc,
+                parallel_iterations=parallel_iterations)
 
-        flat_samples = flatten_batch_dims(unconstrained_samples[0])
+            flat_samples = flatten_batch_dims(unconstrained_samples[0])
 
-        posterior_log_prob = tf.reduce_mean(kernel_results.accepted_results.target_log_prob,
-                                                       name='marginal_log_likelihood')
+            def log_prob(variables):
+                target_saem = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
+                                              fed_kernel='RBF', obs_type='DDTEC',
+                                              variables=variables)
+                return tf.reduce_mean(target_saem.logp(tf.stop_gradient(flat_samples)))
+
+            def saem_objective(variables):
+                objective = -log_prob(variables)
+                return (objective, tf.gradients(objective, variables)[0])
+
+
+            saem_mstep = tfp.optimizer.lbfgs_minimize(saem_objective,
+                                                     var_copy,
+                                                     tolerance=1e-8,
+                                                     x_tolerance=0,
+                                                     f_relative_tolerance=0,
+                                                     # initial_inverse_hessian_estimate=
+                                                     # tf.matrix_solve_ls(tf.hessians(-log_prob(var_copy), var_copy)[0], tf.eye(tf.shape(var_copy),dtype=float_type)),
+                                                     max_iterations=50,
+                                                     parallel_iterations=1)
+
+            with tf.control_dependencies([tf.print("SAEM:", saem_mstep)]):
+                update_variables = tf.assign(variables, saem_mstep.position)
+                return update_variables, unconstrained_samples
 
         def _percentiles(t, q=[10,50,90]):
             """
@@ -319,33 +342,11 @@ class FreeTransitionSAEM(object):
             """
             return tfp.stats.percentile(t, q, axis=0)
 
-        def log_prob(variables):
-            target_saem = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
-                                     fed_kernel='RBF', obs_type='DDTEC', variables = variables)
-            return tf.reduce_mean(target_saem.logp(tf.stop_gradient(flat_samples)))
-            # return posterior_log_prob
-
-        def saem_logprob(variables):
-            objective = -log_prob(variables)
-            return (objective, tf.gradients(objective, variables)[0])
-
-        var_copy = tf.identity(target.variables)
-        saem_mstep = tfp.optimizer.bfgs.minimize(saem_logprob,
-                           var_copy,
-                           tolerance=1e-8,
-                           x_tolerance=0,
-                           f_relative_tolerance=0,
-                           initial_inverse_hessian_estimate = tf.hessians(-log_prob(var_copy), var_copy)[0],
-                           max_iterations=50,
-                           parallel_iterations=1)
-
-        with tf.control_dependencies([tf.print("SAEM", saem_mstep)]):
-            update_variables = tf.assign_add(target.variables, saem_mstep.position)
-
-        with tf.control_dependencies(
-                [tf.print("dm:", dm),]):
-            with tf.control_dependencies([tf.print("m:",target.constrained_states(target.variables))]):
-                q0_init = [tf.reduce_mean(unconstrained_samples[0],axis=0)]
+        # update_variables, unconstrained_samples = saem_step(variables)
+        # with tf.control_dependencies(
+        #         [update_variables]):
+        with tf.control_dependencies([tf.print("m:",target.constrained_states(variables))]):
+            # q0_init = [tf.reduce_mean(unconstrained_samples[0],axis=0)]
 
             hmc = tfp.mcmc.HamiltonianMonteCarlo(
                 target_log_prob_fn=target.logp,
