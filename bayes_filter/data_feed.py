@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 from . import float_type
 from .misc import flatten_batch_dims, make_coord_array
+from .datapack import DataPack
 
 
 def init_feed(feed):
@@ -84,6 +85,65 @@ class DataFeed(Feed):
         indices = tf.range(index, next_index)
         data = [flatten_batch_dims(tf.gather(d, indices, axis=0),num_batch_dims=-self.event_size) for d in self.data]
         return data
+
+class DatapackFeed(Feed):
+    def __init__(self, index_feed:IndexFeed, datapack, *addresses, selection = {}, time_axis=2, perm=(2,1,0), event_size=1, num_parallel_calls=10):
+        """
+        Create a time feed
+        :param index_feed: IndexFeed
+            Pulse of this feed
+        :param data: list of strings
+            Addresses to pytable, [Nt, ..., D]
+        :param time_axis: int
+            The axis at addresses that correspond to time
+        :param perm: tuple of int
+            The permutation to perform before flattening
+        :param num_parallel_calls: int
+            How many threads can map.
+        """
+        self.num_parallel_calls = tf.convert_to_tensor(num_parallel_calls, tf.int32)
+        self.event_size = tf.convert_to_tensor(event_size, tf.int32)
+        self.datapack = datapack
+        self.selection = selection
+        self.selection.pop('time', None)
+        self.addresses = addresses# = [tf.cast(c, float_type) if c.dtype is not float_type else c for c in data]
+        self.time_axis = time_axis
+        self.perm = perm
+        self.index_feed = index_feed
+        self.slice_size = self.index_feed.step
+        # with tf.control_dependencies([tf.assert_equal(tf.shape(d), tf.shape(self.data[0])) for d in self.data]):
+        #     self.Nt = tf.shape(self.data[0])[0]
+        #     self.D = tf.shape(self.data[0])[-1]
+        #     self.N_slice = self.slice_size * tf.reduce_prod(tf.shape(self.data[0])[1:-1])
+        #     self.N = tf.reduce_prod(tf.shape(self.data[0])[:-1])
+        self.data_feed = self.index_feed.feed.map(self.get_data_block, num_parallel_calls=self.num_parallel_calls)
+        self.feed = self.data_feed
+
+    def get_data_block(self, index, next_index):
+        """
+        Get the time slice from index to index + step
+        :param index: tf.int32, Tensor, scalar
+            Index to start slice at
+        :return: float_type, Tensor, [N, D]
+            The returned data block
+        """
+        next_index = tf.minimum(next_index, self.Nt)
+        indices = tf.range(index, next_index)
+        data = [flatten_batch_dims(tf.gather(d, indices, axis=0),num_batch_dims=-self.event_size) for d in self.data]
+        return data
+
+    def _get_block(self, index, next_index):
+        selection = {'time':slice(index,next_index)}
+        selection.update(self.selection)
+        with DataPack as datapack:
+            for (solset,soltab) in self.addresses:
+                datapack.switch_solset(solset)
+                datapack.select(**self.selection)
+                val, axes = getattr(soltab)
+
+        # X = tf.py_function(lambda *X: make_coord_array(*[x.numpy() for x in X], flat=False),
+        #                       X, float_type)
+
 
 class TimeFeed(Feed):
     def __init__(self, index_feed: IndexFeed, times, num_parallel_calls=10):

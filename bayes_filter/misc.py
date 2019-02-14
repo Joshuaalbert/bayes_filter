@@ -93,7 +93,7 @@ def log_normal_solve_fwhm(a,b,D=0.5):
     sigma2 = 0.5*(0.5*d)**2/np.log(1./D)
     s = upper + lower #2 (mu - sigma**2)
     mu = 0.5*s + sigma2
-    return mu, np.sqrt(sigma2)
+    return np.array(mu,dtype=np.float64), np.array(np.sqrt(sigma2),dtype=np.float64)
 
 
 

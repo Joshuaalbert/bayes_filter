@@ -4,6 +4,7 @@ import tensorflow_probability as tfp
 import os
 from bayes_filter.misc import load_array_file
 from bayes_filter import float_type
+from bayes_filter.datapack import DataPack
 import sys
 from bayes_filter.data_feed import IndexFeed,TimeFeed,CoordinateFeed, DataFeed, init_feed, ContinueFeed
 from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references
@@ -93,33 +94,81 @@ def simulated_ddtec(tf_session, lofar_array):
                 self.data_feed = DataFeed(index_feed, Y_real, Y_imag, event_size=1)
     return Simulated()
 
+class LofarDR2:
+    def __init__(self, tf_session, datapack, solset, ant_sel=None, time_sel=None, dir_sel=None, freq_sel=None, pol_sel=None):
+        with DataPack(datapack,readonly=True) as datapack:
+            datapack.switch_solset(solset)
+            datapack.select(ant=ant_sel, time=time_sel, dir=dir_sel, freq=freq_sel, pol=pol_sel)
+
+            phase, axes = datapack.phase
+            #Nt, Nd, Na, Nf
+            Y_real = np.cos(phase[0,...]).transpose((3,0,1,2))
+            Y_imag = np.sin(phase[0,...]).transpose((3,0,1,2))
+
+            antenna_labels, antennas = datapack.get_antennas(axes['ant'])
+            patch_names, directions = datapack.get_sources(axes['dir'])
+            timestamps, times = datapack.get_times(axes['time'])
+            freq_labels, freqs = datapack.get_freqs(axes['freq'])
+            pol_labels, pols = datapack.get_pols(axes['pol'])
+
+            Npol, Nd, Na, Nt, Nf = len(pols), len(directions), len(antennas), len(times), len(freqs)
+            #Nt, 1
+            self.Xt = (times.mjd[:,None]).astype(np.float64)*86400.
+            #Nd, 2
+            self.Xd = np.stack([directions.ra.to(angle_type).value, directions.dec.to(angle_type).value],axis=1)
+            #Na, 3
+            self.Xa = antennas.cartesian.xyz.to(dist_type).value.T
+
+            ref_ant = self.Xa[0,:]
+            ref_dir = np.mean(self.Xd,axis=0)
+
+            with tf_session.graph.as_default():
+                index_feed = IndexFeed(1)
+                time_feed = TimeFeed(index_feed, tf.constant(self.Xt, dtype=float_type))
+                cont_feed = ContinueFeed(time_feed)
+                Xd  = tf.constant(self.Xd, dtype=float_type)
+                Xa  = tf.constant(self.Xa, dtype=float_type)
+                self.coord_feed = CoordinateFeed(time_feed, Xd, Xa,
+                                            coord_map=tf_coord_transform(itrs_to_enu_with_references(ref_ant, ref_dir, ref_ant)))
+
+
+
+                self.star_coord_feed = CoordinateFeed(time_feed, Xd, Xa,
+                                                 coord_map=tf_coord_transform(itrs_to_enu_with_references(ref_ant, ref_dir, ref_ant)))
+                self.data_feed = DataFeed(index_feed, Y_real, Y_imag, event_size=1)
+                self.freqs = freqs
+                self.Y_real = Y_real
+                self.Y_imag = Y_imag
+
 if __name__ == '__main__':
     from tensorflow.python import debug as tf_debug
     sess = tf.Session(graph=tf.Graph())
     # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
     with sess.graph.as_default():
-        simulated_ddtec = simulated_ddtec(sess, lofar_array2(arrays()))
+        data_obj = LofarDR2(sess, '/home/albert/git/bayes_tec/scripts/data/P126+65_compact_full_raw.h5',
+                            'sol000',time_sel=slice(0,4,1),ant_sel=slice(0,None, 2))
 
         free_transition = FreeTransitionSAEM(
-            simulated_ddtec.freqs,
-            simulated_ddtec.data_feed,
-            simulated_ddtec.coord_feed,
-            simulated_ddtec.star_coord_feed)
+            data_obj.freqs,
+            data_obj.data_feed,
+            data_obj.coord_feed,
+            data_obj.star_coord_feed)
 
         filtered_res, inits = free_transition.filter_step(
             num_samples=1000, parallel_iterations=10, num_leapfrog_steps=3,target_rate=0.6,
-            num_burnin_steps=100,num_saem_samples=100,saem_bfgs_maxsteps=1,initial_stepsize=7e-3,
+            num_burnin_steps=100,num_saem_samples=1000,saem_bfgs_maxsteps=2, initial_stepsize=7e-3,
             init_kern_params={'variance':1e-4,'y_sigma':0.2,'lengthscales':15.,'timescale':50.})
         sess.run(inits)
         cont = True
         while cont:
+            t0 = default_timer()
             res = sess.run(filtered_res)
+            print(default_timer() - t0)
             # plt.plot(res.step_sizes)
             # plt.show()
             # plt.hist(res.ess.flatten(),bins=100)
             # plt.show()
-            times = simulated_ddtec.np_times[:,0]
-            ddtec_true = simulated_ddtec.ddtec_true
+            times = data_obj.times[:,0]
 
             # plt.plot(times, res.Y_imag[1,:,0,1,0],c='black',lw=2.)
             # plt.fill_between(times, res.Y_imag[0,:,0,1,0], res.Y_imag[2,:,0,1,0],alpha=0.5)
@@ -130,27 +179,20 @@ if __name__ == '__main__':
             plt.style.use('ggplot')
             fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
 
-            ax1.plot(times, ddtec_true[:, 0, 1])
             ax1.plot(times, res.dtec[1,:,0,1])
             ax1.fill_between(times, res.dtec[0,:,0,1], res.dtec[2,:,0,1], alpha=0.5)
             ax1.legend()
-            ax1.set_title("Model space solution vs true")
+            ax1.set_title("Model space solution")
 
-            ax2.plot(times, simulated_ddtec.Y_imag_true[:, 0, 1, :], c='black', alpha=0.5, ls='dotted', label='Ytrue')
+
+            ax2.plot(times, res.extra.Y_imag_data[:, 0, 1, :], c='black', alpha=0.5, ls='dotted', label='Ydata')
             ax2.plot(times, res.Y_imag[1,:,0,1,:], label='posterior')
             [ax2.fill_between(times, res.Y_imag[0,:,0,1,i], res.Y_imag[2,:,0,1,i],
-                              alpha=0.5) for i, f in enumerate(simulated_ddtec.freqs)]
-            ax2.set_title("Data space solution vs true")
-            ax2.legend()
-
-            ax3.plot(times, res.extra.Y_imag_data[:, 0, 1, :], c='black', alpha=0.5, ls='dotted', label='Ydata')
-            ax3.plot(times, res.Y_imag[1,:,0,1,:], label='posterior')
-            [ax3.fill_between(times, res.Y_imag[0,:,0,1,i], res.Y_imag[2,:,0,1,i],
                               alpha=0.5) for i,f in enumerate(simulated_ddtec.freqs)]
-            ax3.legend()
-            ax3.set_title("Data space solution vs data")
+            ax2.legend()
+            ax2.set_title("Data space solution vs data")
 
-            sns.kdeplot(res.ess.flatten(), ax=ax4, shade=True, alpha=0.5)
+            sns.kdeplot(res.ess.flatten(), ax=ax3, shade=True, alpha=0.5)
             # ax4.plot(step_sizes[0], label='y_sigma stepsize')
             # ax4.plot(step_sizes[1], label='dtec stepsize')
             # ax4.set_yscale("log")
@@ -162,3 +204,4 @@ if __name__ == '__main__':
 
             # print(res)
             cont = res.cont
+

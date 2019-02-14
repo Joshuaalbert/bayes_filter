@@ -219,8 +219,8 @@ class FreeTransitionSAEM(object):
         self.continue_feed = ContinueFeed(self.coord_feed.time_feed)
         self.freqs = tf.convert_to_tensor(freqs,float_type)
 
-    def filter_step(self, num_samples=10, num_chains=1, parallel_iterations=10, num_leapfrog_steps=2, target_rate=0.5,
-                    num_burnin_steps=0, num_saem_samples = 10, saem_learning_rate=0.9, initial_stepsize=1e-3,
+    def filter_step(self, num_samples=10, num_chains=1, parallel_iterations=10, num_leapfrog_steps=2, target_rate=0.6,
+                    num_burnin_steps=0, num_saem_samples = 10, saem_bfgs_maxsteps=5, initial_stepsize=5e-3,
                     init_kern_params=None):
         """
         Run a Bayes filter over the coordinate set.
@@ -253,8 +253,7 @@ class FreeTransitionSAEM(object):
 
 
 
-        TAResult = namedtuple('TAResult',['y_sigma', 'variance', 'lengthscales', 'a', 'b',
-                                      'timescale', 'dtec', 'Y_real', 'Y_imag',
+        TAResult = namedtuple('TAResult',['parameters',  'dtec', 'Y_real', 'Y_imag',
                                           'dtec_star', 'Y_real_star', 'Y_imag_star', 'acc_ratio',
                                           'post_logp', 'cont', 'step_sizes', 'ess','extra'])
 
@@ -363,11 +362,14 @@ class FreeTransitionSAEM(object):
             mean_variance = tf.reduce_mean(var_dtec)
 
             def log_prob(variables):
+
                 target_saem = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
                                               fed_kernel='RBF', obs_type='DDTEC',
-                                              variables=variables, full_posterior=False)
-
-                return target_saem.logp_dtec(mean_dtec, mean_variance) + tf.reduce_mean(target_saem.logp_gains(constrained_samples))
+                                              variables=variables)
+                with tf.control_dependencies([tf.print(target_saem.constrained_states(variables))]):
+                    return target_saem.logp_dtec(mean_dtec, mean_variance) \
+                           + tf.reduce_mean(target_saem.logp_gains(constrained_samples)) \
+                           + target_saem.logp_params(variables)
 
             def saem_objective(variables):
                 objective = -log_prob(variables)
@@ -381,7 +383,7 @@ class FreeTransitionSAEM(object):
                                                      f_relative_tolerance=0,
                                                      # initial_inverse_hessian_estimate=
                                                      # tf.matrix_solve_ls(tf.hessians(-log_prob(var_copy), var_copy)[0], tf.eye(tf.shape(var_copy),dtype=float_type)),
-                                                     max_iterations=5,
+                                                     max_iterations=saem_bfgs_maxsteps,
                                                      parallel_iterations=1)
 
             with tf.control_dependencies([tf.print("SAEM:", saem_mstep)]):
@@ -402,7 +404,7 @@ class FreeTransitionSAEM(object):
 
         update_variables = saem_step(variables)
         with tf.control_dependencies(
-                [update_variables]):
+                [tf.cond(tf.greater(saem_bfgs_maxsteps, 0),lambda: update_variables, lambda: variables)]):
             with tf.control_dependencies([tf.print("m:",target.constrained_states(variables))]):
                 # q0_init = [tf.reduce_mean(unconstrained_samples[0],axis=0)]
 
@@ -453,22 +455,18 @@ class FreeTransitionSAEM(object):
         Y_real = tf.reshape(Y_real, tf.concat([X_dim, [-1]],axis=0))
         Y_imag = tf.reshape(Y_imag, tf.concat([X_dim, [-1]], axis=0))
 
-        output = TAResult(y_sigma = target.state.y_sigma.constrained_value,
-                              variance = target.state.variance.constrained_value,
-                              lengthscales = target.state.lengthscales.constrained_value,
-                              a = target.state.a.constrained_value,
-                              b = target.state.b.constrained_value,
-                              timescale = target.state.timescale.constrained_value,
-                              dtec = dtec_X,
-                              Y_real = Y_real_X,
-                              Y_imag = Y_imag_X,
-                              dtec_star = dtec_Xstar,
-                              Y_real_star = Y_real_Xstar,
-                              Y_imag_star = Y_imag_Xstar,
-                              acc_ratio = avg_acceptance_ratio,
-                              post_logp = posterior_log_prob,
-                              cont = cont,
-                              step_sizes = kernel_results.extra.step_size_assign[0],
-                              ess = ess[0],
-                              extra = ExtraResults(Y_real, Y_imag, X, Xstar, X_dim, Xstar_dim, self.freqs))
+        output = TAResult(
+            parameters = target.constrained_states(variables),
+            dtec = dtec_X,
+            Y_real = Y_real_X,
+            Y_imag = Y_imag_X,
+            dtec_star = dtec_Xstar,
+            Y_real_star = Y_real_Xstar,
+            Y_imag_star = Y_imag_Xstar,
+            acc_ratio = avg_acceptance_ratio,
+            post_logp = posterior_log_prob,
+            cont = cont,
+            step_sizes = kernel_results.extra.step_size_assign[0],
+            ess = ess[0],
+            extra = ExtraResults(Y_real, Y_imag, X, Xstar, X_dim, Xstar_dim, self.freqs))
         return output, inits

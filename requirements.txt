@@ -7,7 +7,9 @@ backcall==0.1.0
 bleach==3.1.0
 certifi==2018.11.29
 cmocean==2.0
+configparser==3.7.1
 cycler==0.10.0
+Cython==0.29.5
 decorator==4.3.2
 defusedxml==0.5.0
 entrypoints==0.3
@@ -30,6 +32,7 @@ jupyter-core==4.4.0
 Keras-Applications==1.0.7
 Keras-Preprocessing==1.0.8
 kiwisolver==1.0.1
+losoto==2.0
 Markdown==3.0.1
 MarkupSafe==1.1.0
 matplotlib==3.0.2
@@ -39,6 +42,7 @@ more-itertools==5.0.0
 nbconvert==5.4.0
 nbformat==4.4.0
 notebook==5.7.4
+numexpr==2.6.9
 numpy==1.16.1
 pandas==0.24.0
 pandocfilters==1.4.2
@@ -62,6 +66,7 @@ scipy==1.2.0
 seaborn==0.9.0
 Send2Trash==1.5.0
 six==1.12.0
+tables==3.4.5.dev0
 tb-nightly==1.13.0a20190201
 termcolor==1.1.0
 terminado==0.8.1

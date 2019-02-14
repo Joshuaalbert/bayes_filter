@@ -307,12 +307,12 @@ class DTECToGainsSAEM(Target):
             ScaledLowerBoundedBijector(10.,50.))
 
         distributions = DTECToGainsSAEM.DTECToGainsParams(
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-2, 10., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-4, 10., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(1., 40., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(100, 1000., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(10., 200., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(10., 100., 0.5)))
+            y_sigma = tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-2, 1., 0.5)),
+            variance = tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-5, 1e-3, 0.5)),
+            lengthscales = tfp.distributions.Normal(tf.convert_to_tensor(20.,dtype=float_type), tf.convert_to_tensor(15.,dtype=float_type)),
+            a = tfp.distributions.Normal(tf.convert_to_tensor(250.,dtype=float_type), tf.convert_to_tensor(150.,dtype=float_type)),
+            b = tfp.distributions.Normal(tf.convert_to_tensor(70.,dtype=float_type), tf.convert_to_tensor(50.,dtype=float_type)),
+            timescale = tfp.distributions.Normal(tf.convert_to_tensor(60.,dtype=float_type), tf.convert_to_tensor(50.,dtype=float_type)))
 
         if variables is None:
             constrained_vars = tf.stack([b.inverse(v) for (b, v) in zip(bijectors, initial_values)], axis=0)
@@ -401,6 +401,10 @@ class DTECToGainsSAEM(Target):
         logp -= 0.5 * num_dims * np.log(2 * np.pi)
         logp -= tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)))
         return logp
+
+    def logp_params(self, variables):
+        state = self.constrained_states(variables)
+        return sum([tf.reduce_mean(p.constrained_prior.log_prob(s)) for (p, s) in zip(self.parameters, state)])
 
     def logp_gains(self, constrained_dtec):
         """
