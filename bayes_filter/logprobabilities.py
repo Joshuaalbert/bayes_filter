@@ -300,10 +300,10 @@ class DTECToGainsSAEM(Target):
 
         bijectors = DTECToGainsSAEM.DTECToGainsParams(
             ScaledLowerBoundedBijector(1e-2,0.2),
-            ScaledLowerBoundedBijector(1e-5,1e-5),
+            ScaledLowerBoundedBijector(5e-6,5e-5),
             ScaledLowerBoundedBijector(3., 15.),
             ScaledLowerBoundedBijector(100.,100.),
-            ScaledLowerBoundedBijector(30.,100.),
+            ScaledLowerBoundedBijector(10.,100.),
             ScaledLowerBoundedBijector(10.,50.))
 
         distributions = DTECToGainsSAEM.DTECToGainsParams(
@@ -366,6 +366,14 @@ class DTECToGainsSAEM(Target):
         # N+Ns, N+Ns
         self.L = tf.cholesky(K + diagonal_jitter(self.Nh))
         self.L.set_shape(tf.TensorShape([None,None]))
+
+
+    def unconstrained_states(self, variables=None):
+        if variables is None:
+            variables = self.variables
+        # with tf.control_dependencies([tf.print("unconstrained_states -> ",*[(tf.shape(s),s) for s in unconstrained_states])]):
+        return DTECToGainsSAEM.DTECToGainsParams(*[self.parameters[i].bijector.inverse(tf.reshape(variables[i:i+1], (-1, 1))) for i in range(len(self.parameters))])
+
 
     def constrained_states(self, variables=None):
         if variables is None:

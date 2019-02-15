@@ -47,40 +47,52 @@ def simulated_ddtec(tf_session, lofar_array):
                 Xa  = tf.constant(lofar_array[1], dtype=float_type)
                 coord_feed = CoordinateFeed(time_feed, Xd, Xa,
                                             coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
-                ra = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(Nd+1, 1))
-                dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(Nd+1, 1))
+                # ra = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(Nd, 1))
+                # dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(Nd, 1))
+                ra = ra - 1.*np.pi/180.
+                dec = dec - 1.* np.pi / 180.
                 Xd = tf.concat([ra, dec], axis=1)
                 star_coord_feed = CoordinateFeed(time_feed, Xd, Xa,
                                                  coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
 
                 init, next = init_feed(coord_feed)
+                init_star, next_star = init_feed(star_coord_feed)
                 init_cont, cont = init_feed(cont_feed)
-                tf_session.run([init, init_cont])
-                kern = DTECIsotropicTimeGeneral(variance=1e-4,timescale=45.,lengthscales=10., a=200., b=60.,
+                tf_session.run([init, init_cont, init_star])
+                kern = DTECIsotropicTimeGeneral(variance=0.5e-4,timescale=45.,lengthscales=5., a=200., b=60.,
                                          fed_kernel='RBF',obs_type='DDTEC',resolution=5, squeeze=True)
                 # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
 
                 from timeit import default_timer
                 t0 = default_timer()
                 Y_real, Y_imag = [],[]
+                Y_real_star, Y_imag_star = [], []
+                ddtec_true, ddtec_star = [],[]
                 while True:
-                    K = tf_session.run(kern.K(next))
-                    # K = tf_session.run(kern.matrix(next[:,4:7],next[:,4:7]))
+                    K,N = tf_session.run([kern.K(tf.concat([next,next_star],axis=0)),tf.shape(next)[0]])
                     L = np.linalg.cholesky(K+1e-6*np.eye(K.shape[-1]))
+                    np.random.seed(0)
                     ddtec = np.einsum('ab,b->a',L, np.random.normal(size=L.shape[1]))
+                    ddtec_true.append(ddtec[:N])
+                    ddtec_star.append(ddtec[N:])
                     freqs = np.linspace(110.e6, 160.e6, Nf)
-                    Y_real.append(np.cos(-8.448e9*ddtec[:,None]/freqs))
-                    Y_imag.append(np.sin(-8.448e9 * ddtec[:, None] / freqs))
+                    Y_real.append(np.cos(-8.448e9 * ddtec[:N,None]/freqs))
+                    Y_imag.append(np.sin(-8.448e9 * ddtec[:N, None] / freqs))
+                    Y_real_star.append(np.cos(-8.448e9 * ddtec[N:, None] / freqs))
+                    Y_imag_star.append(np.sin(-8.448e9 * ddtec[N:, None] / freqs))
                     if not tf_session.run(cont):
                         break
+                self.Y_real_star = np.concatenate(Y_real_star,axis=0).reshape((Nt, Nd, Na, Nf))
+                self.Y_imag_star = np.concatenate(Y_imag_star, axis=0).reshape((Nt, Nd, Na, Nf))
                 Y_real_true = np.concatenate(Y_real,axis=0).reshape((Nt, Nd, Na, Nf))
-                Y_real = Y_real_true + 0.5*np.random.laplace(size=Y_real_true.shape)
-                Y_real[Nt//2:Nt//2 + 5, ...] *= 0.5
+                Y_real = Y_real_true + 0.5*np.random.normal(size=Y_real_true.shape)
+                # Y_real[Nt//2:Nt//2 + 5, ...] *= 0.5
                 Y_imag_true = np.concatenate(Y_imag, axis=0).reshape((Nt, Nd, Na, Nf))
-                Y_imag = Y_imag_true + 0.5 * np.random.laplace(size=Y_imag_true.shape)
-                Y_imag[Nt // 2:Nt // 2 + 5, ...] *= 0.5
+                Y_imag = Y_imag_true + 0.5 * np.random.normal(size=Y_imag_true.shape)
+                # Y_imag[Nt // 2:Nt // 2 + 5, ...] *= 0.5
                 self.freqs = freqs
-                self.ddtec_true = ddtec.reshape((Nt, Nd, Na))
+                self.ddtec_true = np.concatenate(ddtec_true,axis=0).reshape((Nt, Nd, Na))
+                self.ddtec_star = np.concatenate(ddtec_star, axis=0).reshape((Nt, Nd, Na))
                 self.Y_real = Y_real
                 self.Y_imag = Y_imag
                 self.Y_real_true = Y_real_true
@@ -106,20 +118,27 @@ if __name__ == '__main__':
             simulated_ddtec.coord_feed,
             simulated_ddtec.star_coord_feed)
 
+
+
         filtered_res, inits = free_transition.filter_step(
             num_samples=1000, num_chains=1,parallel_iterations=10, num_leapfrog_steps=3,target_rate=0.6,
-            num_burnin_steps=10,num_saem_samples=100,saem_bfgs_maxsteps=5,initial_stepsize=7e-3,
-            init_kern_params={'variance':1e-4,'y_sigma':0.2,'lengthscales':15.,'timescale':50.})
+            num_burnin_steps=100,num_saem_samples=500,saem_maxsteps=0,initial_stepsize=7e-3,
+            init_kern_params={'y_sigma':0.5,'variance':0.5e-4,'timescale':45.,'lengthscales':5., 'a':200., 'b':60.})
         sess.run(inits)
         cont = True
         while cont:
             res = sess.run(filtered_res)
+            print("post_logp", res.post_logp,"test_logp", res.test_logp)
             # plt.plot(res.step_sizes)
             # plt.show()
             # plt.hist(res.ess.flatten(),bins=100)
             # plt.show()
             times = simulated_ddtec.np_times[:,0]
             ddtec_true = simulated_ddtec.ddtec_true
+            ddtec_star = simulated_ddtec.ddtec_star
+            Y_real_star = simulated_ddtec.Y_real_star
+            Y_imag_star = simulated_ddtec.Y_imag_star
+
 
             # plt.plot(times, res.Y_imag[1,:,0,1,0],c='black',lw=2.)
             # plt.fill_between(times, res.Y_imag[0,:,0,1,0], res.Y_imag[2,:,0,1,0],alpha=0.5)
@@ -134,29 +153,29 @@ if __name__ == '__main__':
             ax1.plot(times, res.dtec[1,:,0,1])
             ax1.fill_between(times, res.dtec[0,:,0,1], res.dtec[2,:,0,1], alpha=0.5)
             ax1.legend()
-            ax1.set_title("Model space solution vs true")
+            ax1.set_title("Model space solution")
 
             ax2.plot(times, simulated_ddtec.Y_imag_true[:, 0, 1, :], c='black', alpha=0.5, ls='dotted', label='Ytrue')
+            ax2.plot(times, res.extra.Y_imag_data[:, 0, 1, :], c='red', alpha=0.5, ls='dotted', label='Ydata')
             ax2.plot(times, res.Y_imag[1,:,0,1,:], label='posterior')
             [ax2.fill_between(times, res.Y_imag[0,:,0,1,i], res.Y_imag[2,:,0,1,i],
                               alpha=0.5) for i, f in enumerate(simulated_ddtec.freqs)]
-            ax2.set_title("Data space solution vs true")
+            ax2.set_title("Data space solution")
             ax2.legend()
 
-            ax3.plot(times, res.extra.Y_imag_data[:, 0, 1, :], c='black', alpha=0.5, ls='dotted', label='Ydata')
-            ax3.plot(times, res.Y_imag[1,:,0,1,:], label='posterior')
-            [ax3.fill_between(times, res.Y_imag[0,:,0,1,i], res.Y_imag[2,:,0,1,i],
-                              alpha=0.5) for i,f in enumerate(simulated_ddtec.freqs)]
+            ax3.plot(times, ddtec_star[:, 0, 1])
+            ax3.plot(times, res.dtec_star[1, :, 0, 1])
+            ax3.fill_between(times, res.dtec_star[0, :, 0, 1], res.dtec_star[2, :, 0, 1], alpha=0.5)
             ax3.legend()
-            ax3.set_title("Data space solution vs data")
+            ax3.set_title("Model space solution*")
 
-            sns.kdeplot(res.ess.flatten(), ax=ax4, shade=True, alpha=0.5)
-            # ax4.plot(step_sizes[0], label='y_sigma stepsize')
-            # ax4.plot(step_sizes[1], label='dtec stepsize')
-            # ax4.set_yscale("log")
-            # ax4.set_title("stepsizes")
+            ax4.plot(times, simulated_ddtec.Y_imag_star[:, 0, 1, :], c='black', alpha=0.5, ls='dotted', label='Ytrue')
+            # ax4.plot(times, res.extra.Y_imag_star[:, 0, 1, :], c='red', alpha=0.5, ls='dotted', label='Ydata')
+            ax4.plot(times, res.Y_imag_star[1, :, 0, 1, :], label='posterior')
+            [ax4.fill_between(times, res.Y_imag_star[0, :, 0, 1, i], res.Y_imag_star[2, :, 0, 1, i],
+                              alpha=0.5) for i, f in enumerate(simulated_ddtec.freqs)]
+            ax4.set_title("Data space solution*")
             ax4.legend()
-            ax4.set_title('Effective sample size')
             plt.show()
 
 
