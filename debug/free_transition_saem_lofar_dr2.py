@@ -96,16 +96,19 @@ def simulated_ddtec(tf_session, lofar_array):
 
 class LofarDR2:
     def __init__(self, tf_session, datapack, solset, ant_sel=None, time_sel=None, dir_sel=None, freq_sel=None, pol_sel=None):
+        ant_idx = [0] + list(range(47,62))
+        ant_idx = [0,50,51]
         with DataPack(datapack,readonly=True) as datapack:
             datapack.switch_solset(solset)
             datapack.select(ant=ant_sel, time=time_sel, dir=dir_sel, freq=freq_sel, pol=pol_sel)
 
             phase, axes = datapack.phase
+            phase = phase[:,:,ant_idx,:,:]
             #Nt, Nd, Na, Nf
             Y_real = np.cos(phase[0,...]).transpose((3,0,1,2))
             Y_imag = np.sin(phase[0,...]).transpose((3,0,1,2))
 
-            antenna_labels, antennas = datapack.get_antennas(axes['ant'])
+            antenna_labels, antennas = datapack.get_antennas(axes['ant'][ant_idx])
             patch_names, directions = datapack.get_sources(axes['dir'])
             timestamps, times = datapack.get_times(axes['time'])
             freq_labels, freqs = datapack.get_freqs(axes['freq'])
@@ -123,7 +126,7 @@ class LofarDR2:
             ref_dir = np.mean(self.Xd,axis=0)
 
             with tf_session.graph.as_default():
-                index_feed = IndexFeed(1)
+                index_feed = IndexFeed(30)
                 time_feed = TimeFeed(index_feed, tf.constant(self.Xt, dtype=float_type))
                 cont_feed = ContinueFeed(time_feed)
                 Xd  = tf.constant(self.Xd, dtype=float_type)
@@ -139,6 +142,7 @@ class LofarDR2:
                 self.freqs = freqs
                 self.Y_real = Y_real
                 self.Y_imag = Y_imag
+                self.y_sigma = 0.5*(np.square(np.diff(Y_real,axis=0)).mean() + np.square(np.diff(Y_imag,axis=0)).mean())
 
 if __name__ == '__main__':
     from tensorflow.python import debug as tf_debug
@@ -146,7 +150,8 @@ if __name__ == '__main__':
     # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
     with sess.graph.as_default():
         data_obj = LofarDR2(sess, '/home/albert/git/bayes_tec/scripts/data/P126+65_compact_full_raw.h5',
-                            'sol000',time_sel=slice(0,4,1),ant_sel=slice(0,None, 2))
+                            'sol000',time_sel=slice(0,30,1),dir_sel=slice(0,3,1))
+        print(data_obj.y_sigma)
 
         free_transition = FreeTransitionSAEM(
             data_obj.freqs,
@@ -155,20 +160,22 @@ if __name__ == '__main__':
             data_obj.star_coord_feed)
 
         filtered_res, inits = free_transition.filter_step(
-            num_samples=1000, parallel_iterations=10, num_leapfrog_steps=3,target_rate=0.6,
-            num_burnin_steps=100,num_saem_samples=1000,saem_bfgs_maxsteps=2, initial_stepsize=7e-3,
-            init_kern_params={'variance':1e-4,'y_sigma':0.2,'lengthscales':15.,'timescale':50.})
+            num_samples=1000, parallel_iterations=10, num_chains=10,num_leapfrog_steps=3,target_rate=0.6,
+            num_burnin_steps=10,num_saem_samples=100,saem_bfgs_maxsteps=5, initial_stepsize=7e-3,
+            init_kern_params={'variance':0.5e-4,'y_sigma':data_obj.y_sigma,'lengthscales':15.,'timescale':50.})
         sess.run(inits)
         cont = True
+        iteration = 0
         while cont:
             t0 = default_timer()
             res = sess.run(filtered_res)
-            print(default_timer() - t0)
+            print("time",default_timer() - t0)
+            print("post_logp",res.post_logp)
             # plt.plot(res.step_sizes)
             # plt.show()
             # plt.hist(res.ess.flatten(),bins=100)
             # plt.show()
-            times = data_obj.times[:,0]
+            times = data_obj.Xt[:,0]
 
             # plt.plot(times, res.Y_imag[1,:,0,1,0],c='black',lw=2.)
             # plt.fill_between(times, res.Y_imag[0,:,0,1,0], res.Y_imag[2,:,0,1,0],alpha=0.5)
@@ -188,7 +195,7 @@ if __name__ == '__main__':
             ax2.plot(times, res.extra.Y_imag_data[:, 0, 1, :], c='black', alpha=0.5, ls='dotted', label='Ydata')
             ax2.plot(times, res.Y_imag[1,:,0,1,:], label='posterior')
             [ax2.fill_between(times, res.Y_imag[0,:,0,1,i], res.Y_imag[2,:,0,1,i],
-                              alpha=0.5) for i,f in enumerate(simulated_ddtec.freqs)]
+                              alpha=0.5) for i,f in enumerate(data_obj.freqs)]
             ax2.legend()
             ax2.set_title("Data space solution vs data")
 
@@ -199,7 +206,9 @@ if __name__ == '__main__':
             # ax4.set_title("stepsizes")
             ax4.legend()
             ax4.set_title('Effective sample size')
-            plt.show()
+            plt.savefig('result_{}.png'.format(iteration))
+            plt.close('all')
+            
 
 
             # print(res)
