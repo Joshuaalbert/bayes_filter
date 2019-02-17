@@ -12,10 +12,10 @@ import astropy.time as at
 from .frames import ENU
 from .settings import dist_type, float_type, jitter
 from .parameters import SphericalToCartesianBijector, ConstrainedBijector, ScaledPositiveBijector, ScaledBijector, Parameter, ScaledLowerBoundedBijector
-from .kernels import DTECFrozenFlow, DTECIsotropicTime, DTECIsotropicTimeLong, DTECIsotropicTimeGeneral
+from .kernels import DTECFrozenFlow, DTECIsotropicTime, DTECIsotropicTimeLong, DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
 from .logprobabilities import DTECToGains
 from .filters import FreeTransition
-
+from .dblquad import dblquad
 
 @pytest.fixture
 def tf_graph():
@@ -595,6 +595,35 @@ def test_isotropic_time_general(tf_session, lofar_array):
         #
         # assert np.all(np.isclose(K,K_long))
 
+def test_isotropic_time_general_ode(tf_session, lofar_array):
+    with tf_session.graph.as_default():
+        index_feed = IndexFeed(1)
+        obstime_init = at.Time("2018-01-01T00:00:00.000", format='isot')
+        times = obstime_init.mjd*86400. + tf.cast(tf.linspace(0., 50., 9)[:, None],float_type)
+        time_feed = TimeFeed(index_feed, times)
+        ra = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
+        dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
+        Xd = tf.concat([ra, dec], axis=1)
+        Xa = tf.constant(np.concatenate([lofar_array[1][0:1,:], lofar_array[1]],axis=0), dtype=float_type)
+        coord_feed = CoordinateFeed(time_feed, Xd, Xa,
+                                    coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
+        init, next = init_feed(coord_feed)
+        kern = DTECIsotropicTimeGeneralODE(variance=5e-2,timescale=30.,lengthscales=5., a=250., b=100.,
+                                           fed_kernel='RBF',obs_type='DDTEC',atol=1e-12, rtol=1e-2, squeeze=True)
+        K, info = kern.K(next, full_output=True)
+        tf_session.run([init])
+        K,info = tf_session.run([K, info])
+        print(info)
+        import pylab as plt
+        plt.imshow(K)
+        plt.colorbar()
+        plt.show()
+
+
+        # L = np.linalg.cholesky(K1 + 1e-6*np.eye(K1.shape[-1]))
+        # ddtecs = np.einsum("ab,bc->ac",L, np.random.normal(size=L.shape)).reshape(list(dims)+[L.shape[0]])
+        # print(ddtecs[:,:,51].var(), 0.01**2/ddtecs[:,:,51].var())
+
 def test_K_parts(tf_session, lofar_array):
     with tf_session.graph.as_default():
         Xt = np.linspace(0., 100., 2)[:, None]
@@ -953,3 +982,14 @@ def test_free_transition(tf_session, simulated_ddtec):
 #                                target_rate=0.5, num_burnin_steps=0)
 #
 #         res = tf_session.run(filtered_res)
+
+def test_dblquad(tf_session):
+    with tf_session.graph.as_default():
+        def func(t1,t2):
+            return tf.tile(tf.reshape((-tf.square(t1-t2)), (1,)), [50])
+        l = tf.constant(0., float_type)
+        u = tf.constant(1., float_type)
+        I, info = dblquad(func, l, u,lambda t:l, lambda t:u, (50,))
+        print(tf_session.run([I,info]))
+
+        assert np.all(np.isclose(tf_session.run(I), -1/6.))

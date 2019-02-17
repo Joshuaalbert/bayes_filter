@@ -1,6 +1,6 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
-from .kernels import DTECIsotropicTimeGeneral
+from .kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
 from .parameters import Parameter, ScaledPositiveBijector, ConstrainedBijector, ScaledLowerBoundedBijector
 from collections import namedtuple
 from .misc import diagonal_jitter, log_normal_solve_fwhm, K_parts
@@ -345,7 +345,18 @@ class DTECToGainsSAEM(Target):
         #Nf
         self.freqs = freqs
 
-        kern = DTECIsotropicTimeGeneral(
+        # kern = DTECIsotropicTimeGeneral(
+        #     variance=self.state.variance,
+        #     lengthscales=self.state.lengthscales,
+        #     timescale=self.state.timescale,
+        #     a=self.state.a,
+        #     b=self.state.b,
+        #     resolution=resolution,
+        #     fed_kernel=self.fed_kernel,
+        #     obs_type=self.obs_type,
+        #     squeeze=True)
+
+        kern = DTECIsotropicTimeGeneralODE(
             variance=self.state.variance,
             lengthscales=self.state.lengthscales,
             timescale=self.state.timescale,
@@ -354,6 +365,7 @@ class DTECToGainsSAEM(Target):
             resolution=resolution,
             fed_kernel=self.fed_kernel,
             obs_type=self.obs_type,
+            rtol=1e-2,
             squeeze=True)
 
         # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
@@ -491,7 +503,7 @@ class DTECToGainsSAEM(Target):
         #[1]
         logdet = tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)), axis=0, keepdims=True)
         # dtec_logp = dtec_prior.log_prob(dtec) - logdet
-        dtec_logp = -0.5*tf.reduce_sum(tf.square(dtec),axis=1)# - logdet - 0.5*tf.cast(self.N+self.Ns, float_type)*np.log(2*np.pi)
+        dtec_logp = -0.5*tf.reduce_sum(tf.square(dtec),axis=1) - logdet - 0.5*tf.cast(self.N+self.Ns, float_type)*np.log(2*np.pi)
 
         #print(logp, dtec_logp)
         if self.full_posterior:

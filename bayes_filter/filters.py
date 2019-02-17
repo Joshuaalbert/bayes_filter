@@ -285,7 +285,7 @@ class FreeTransitionSAEM(object):
 
             def log_prob(variables):
 
-                target_saem = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
+                target_saem = DTECToGainsSAEM(X, None, Y_real, Y_imag, self.freqs,
                                               fed_kernel='RBF', obs_type='DDTEC',
                                               variables=variables)
 
@@ -304,7 +304,7 @@ class FreeTransitionSAEM(object):
                 unconstrained_samples, kernel_results = tfp.mcmc.sample_chain(
                     num_results=num_saem_samples,
                     num_burnin_steps=num_burnin_steps,
-                    current_state=q0_init,
+                    current_state=[q0_init[0][:,:N]],
                     kernel=hmc,
                     parallel_iterations=parallel_iterations)
 
@@ -320,7 +320,10 @@ class FreeTransitionSAEM(object):
                 # mean_variance = tf.reduce_mean(var_dtec)
                 # ###
 
-                with tf.control_dependencies([tf.print(target_saem.constrained_states(variables))]):
+                posterior_log_prob = tf.reduce_mean(kernel_results.accepted_results.target_log_prob,
+                                                    name='marginal_log_likelihood')
+
+                with tf.control_dependencies([tf.print(posterior_log_prob, target_saem.constrained_states(variables))]):
                     ess = tfp.mcmc.effective_sample_size(unconstrained_samples)
                     avg_acceptance_ratio = tf.reduce_mean(tf.exp(tf.minimum(kernel_results.log_accept_ratio, 0.)),
                                                           name='avg_acc_ratio')
@@ -362,9 +365,9 @@ class FreeTransitionSAEM(object):
             #                                          max_iterations=saem_maxsteps,
             #                                          parallel_iterations=1)
 
-            with tf.control_dependencies([tf.print("SAEM:", saem_mstep)]):
-                update_variables = tf.assign(variables, saem_mstep.position)#saem_mstep.position
-                return update_variables
+            # with tf.control_dependencies([tf.print("SAEM:", saem_mstep)]):
+            update_variables = tf.assign(variables, saem_mstep.position)#saem_mstep.position
+            return update_variables
 
         def _percentiles(t, q=[10,50,90]):
             """

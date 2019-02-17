@@ -5,7 +5,100 @@ import astropy.units as au
 from .settings import dist_type, float_type, jitter
 from timeit import default_timer
 from .odeint import odeint
+from astropy.io import fits
+from matplotlib.patches import Circle
+import pylab as plt
+from scipy.spatial.distance import pdist
 
+def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/image.pybdsm.srl.fits', max_N = None):
+    """Given a srl file containing the sources extracted from the apparent flux image of the field,
+    decide the screen directions
+
+    :param srl_fits: str
+        The path to the srl file, typically created by pybdsf
+    :return: float, array [N, 2]
+        The `N` sources' coordinates as an ``astropy.coordinates.ICRS`` object
+    """
+    hdu = fits.open(srl_fits)
+    data = hdu[1].data
+
+    arg = np.argsort(data['Total_Flux'])[::-1]
+
+    #75MHz NLcore
+    exclude_radius = 7.82/2.
+    flux_limit = 0.05
+
+    ra = []
+    dec = []
+    idx = []
+    for i in arg:
+        if data['Total_Flux'][i] < flux_limit:
+            continue
+        ra_ = data['RA'][i]
+        dec_ = data['DEC'][i]
+        radius = np.sqrt((ra_ - 126)**2 + (dec_ - 65)**2)
+        if radius > exclude_radius:
+            continue
+        elif radius > 4.75/2.:
+            high_flux = 0.5
+            threshold = 1.
+            f_steps = 10**np.linspace(np.log10(high_flux), np.log10(np.max(data['Total_flux'])), 1000)[::-1]
+            f_spacing = 10**(np.linspace(np.log10(1./60.),np.log10(10./60.),1000))
+        elif radius > 3.56/2.:
+            high_flux = 0.1
+            threshold = 20./60.
+            f_steps = 10**np.linspace(np.log10(high_flux), np.log10(np.max(data['Total_flux'])), 1000)[::-1]
+            f_spacing = 10**(np.linspace(np.log10(1./60.),np.log10(10./60.),1000))
+        else:
+            high_flux = 0.05
+            threshold = 15./60.
+            f_steps = 10**np.linspace(np.log10(high_flux), np.log10(np.max(data['Total_flux'])), 1000)[::-1]
+            f_spacing = 10**(np.linspace(np.log10(1./60.),np.log10(10./60.),1000))
+        if data['Total_Flux'][i] > high_flux:
+            a = np.searchsorted(f_steps, data['Total_Flux'][i])-1
+            threshold = f_spacing[a]
+        if len(ra) == 0:
+            ra.append(ra_)
+            dec.append(dec_)
+            idx.append(i)
+            continue
+        dist = np.sqrt(np.square(np.subtract(ra_, ra)) + np.square(np.subtract(dec_,dec)))
+        if np.all(dist > threshold):
+            ra.append(ra_)
+            dec.append(dec_)
+            idx.append(i)
+            continue
+
+    f = data['Total_Flux'][idx]
+    ra = data['RA'][idx]
+    dec = data['DEC'][idx]
+    c = data['S_code'][idx]
+
+    if max_N is not None:
+        arg = np.argsort(f)[::-1][:max_N]
+        f = f[arg]
+        ra = ra[arg]
+        dec = dec[arg]
+        c = c[arg]
+
+    plt.scatter(ra,dec,c=np.linspace(0.,1.,len(ra)),cmap='jet',s=np.sqrt(10000.*f),alpha=1.)
+
+    target = Circle((126., 65.),radius = 3.56/2.,fc=None, alpha=0.2)
+    ax = plt.gca()
+    ax.add_patch(target)
+    target = Circle((126., 65.),radius = 4.75/2.,fc=None, alpha=0.2)
+    ax = plt.gca()
+    ax.add_patch(target)
+    plt.title("Brightest {} sources".format(len(f)))
+    plt.xlabel('ra (deg)')
+    plt.xlabel('dec (deg)')
+    plt.savefig("scren_directions.png")
+    interdist = pdist(np.stack([ra,dec],axis=1)*60.)
+    plt.hist(interdist,bins=len(f))
+    plt.title("inter-facet distance distribution")
+    plt.xlabel('inter-facet distance [arcmin]')
+    plt.savefig("interfacet_distance_dist.png")
+    return ac.ICRS(ra=ra*au.deg, dec=dec*au.deg)
 
 def random_sample(t, n=None):
     """
