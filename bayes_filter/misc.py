@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import astropy.coordinates as ac
 import astropy.units as au
+import astropy.time as at
 from .settings import dist_type, float_type, jitter
 from timeit import default_timer
 from .odeint import odeint
@@ -9,6 +10,72 @@ from astropy.io import fits
 from matplotlib.patches import Circle
 import pylab as plt
 from scipy.spatial.distance import pdist
+from . import logging
+import os
+from .datapack import DataPack
+
+
+def make_example_datapack(Nd, Nf, Nt, pols=None, time_corr=50., dir_corr=0.5 * np.pi / 180., tec_scale=0.02,
+                          tec_noise=1e-3, name='test.hdf5', clobber=False):
+    """
+
+    :param Nd:
+    :param Nf:
+    :param Nt:
+    :param pols:
+    :param time_corr:
+    :param dir_corr:
+    :param tec_scale:
+    :param tec_noise:
+    :param name:
+    :param clobber:
+    :return:
+    """
+    logging.info("=== Creating example datapack ===")
+    name = os.path.abspath(name)
+    if os.path.isfile(name) and clobber:
+        os.unlink(name)
+
+    datapack = DataPack(name, readonly=False)
+    with datapack:
+        datapack.switch_solset('sol000')
+        datapack.add_antennas()
+        datapack.add_sources(np.random.normal(np.pi / 4., np.pi / 180. * 2.5, size=[Nd, 2]))
+        _, directions = datapack.sources
+        _, antennas = datapack.antennas
+        ref_dist = np.linalg.norm(antennas - antennas[0:1, :], axis=1)[None, None, :, None]  # 1,1,Na,1
+
+        times = at.Time(np.linspace(0, Nt * 8, Nt)[:, None], format='gps').mjd * 86400.  # mjs
+        freqs = np.linspace(120, 160, Nf) * 1e6
+        if pols is not None:
+            use_pols = True
+            assert isinstance(pols, (tuple, list))
+        else:
+            use_pols = False
+            pols = ['XX']
+
+        tec_conversion = -8.440e9 / freqs  # Nf
+
+        X = make_coord_array(directions / dir_corr, times / time_corr)  # Nd*Nt, 3
+        X2 = np.sum((X[:, :, None] - X.T[None, :, :]) ** 2, axis=1)  # N,N
+        K = tec_scale ** 2 * np.exp(-0.5 * X2)
+        L = np.linalg.cholesky(K + 1e-6 * np.eye(K.shape[0]))  # N,N
+        Z = np.random.normal(size=(K.shape[0], len(pols)))  # N,npols
+        tec = np.einsum("ab,bc->ac", L, Z)  # N,npols
+        tec = tec.reshape((Nd, Nt, len(pols))).transpose((2, 0, 1))  # Npols,Nd,Nt
+        tec = tec[:, :, None, :] * (0.2 + ref_dist / np.max(ref_dist))  # Npols,Nd,Na,Nt
+        #         print(tec)
+        tec += tec_noise * np.random.normal(size=tec.shape)
+        phase = tec[:, :, :, None, :] * tec_conversion[None, None, None, :, None]  ##Npols,Nd,Na,Nf,Nt
+        #         print(phase)
+        phase = np.angle(np.exp(1j * phase))
+
+        if not use_pols:
+            phase = phase[0, ...]
+            pols = None
+        datapack.add_freq_dep_tab('phase', times=times[:, 0], freqs=freqs, pols=pols, vals=phase)
+        datapack.phase = phase
+        return datapack
 
 def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/image.pybdsm.srl.fits', max_N = None):
     """Given a srl file containing the sources extracted from the apparent flux image of the field,
@@ -111,11 +178,19 @@ def random_sample(t, n=None):
     :return: float_type, tf.Tensor, [n, ...]
         The randomly sliced tensor.
     """
-    if n is None:
-        n = tf.shape(t)[0]
-    n = tf.minimum(n, tf.shape(t)[0])
-    idx = tf.random_shuffle(tf.range(n))
-    return tf.gather(t, idx, axis=0)
+    if isinstance(t, (list, tuple)):
+        with tf.control_dependencies([tf.assert_equal(tf.shape(t[i])[0], tf.shape(t[0])[0]) for i in range(len(t))]):
+            if n is None:
+                n = tf.shape(t[0])[0]
+            n = tf.minimum(n, tf.shape(t[0])[0])
+            idx = tf.random_shuffle(tf.range(n))
+            return [tf.gather(t[i], idx, axis=0) for i in range(len(t))]
+    else:
+        if n is None:
+            n = tf.shape(t)[0]
+        n = tf.minimum(n, tf.shape(t)[0])
+        idx = tf.random_shuffle(tf.range(n))
+        return tf.gather(t, idx, axis=0)
 
 
 def K_parts(kern, X_list, X_dims_list):

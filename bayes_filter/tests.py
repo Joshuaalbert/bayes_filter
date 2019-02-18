@@ -4,7 +4,7 @@ import tensorflow_probability as tfp
 import numpy as np
 import sys, os
 from .data_feed import CoordinateFeed, TimeFeed, IndexFeed, DataFeed, init_feed, ContinueFeed, CoordinateDimFeed
-from .misc import flatten_batch_dims, load_array_file, make_coord_array, timer, diagonal_jitter, log_normal_solve_fwhm, K_parts, random_sample
+from .misc import flatten_batch_dims, load_array_file, make_coord_array, timer, diagonal_jitter, log_normal_solve_fwhm, K_parts, random_sample, make_example_datapack
 from .coord_transforms import itrs_to_enu_6D, tf_coord_transform, itrs_to_enu_with_references
 import astropy.units as au
 import astropy.coordinates as ac
@@ -16,6 +16,7 @@ from .kernels import DTECFrozenFlow, DTECIsotropicTime, DTECIsotropicTimeLong, D
 from .logprobabilities import DTECToGains
 from .filters import FreeTransition
 from .dblquad import dblquad
+from .plotting import DatapackPlotter, animate_datapack
 
 @pytest.fixture
 def tf_graph():
@@ -179,6 +180,16 @@ def test_coord_dim_feed(tf_session):
 
 ###
 # misc tests
+
+def test_plotdatapack():
+    # dp = DatapackPlotter(datapack='/home/albert/git/bayes_tec/scripts/data/P126+65_compact_full_raw.h5')
+    # dp.plot(ant_sel=None, pol_sel=slice(0,1,1), time_sel=slice(0,1,1), fignames=['test_fig.png'], solset='sol000', observable='phase', plot_facet_idx=True,
+    #         labels_in_radec=True, show=False)
+
+
+   animate_datapack('/home/albert/git/bayes_tec/scripts/data/P126+65_compact_full_raw.h5',
+           '/home/albert/git/bayes_tec/scripts/data/figures',num_processes=12,observable='phase',labels_in_radec=True,
+                    solset='sol000', plot_facet_idx=True,)
 
 def test_random_sample(tf_session):
     with tf_session.graph.as_default():

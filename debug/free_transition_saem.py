@@ -33,7 +33,7 @@ def simulated_ddtec(tf_session, lofar_array):
     class Simulated:
         def __init__(self):
 
-            Nt, Nd, Na, Nf = 30, 4, len(lofar_array[0]), 6
+            Nt, Nd, Na, Nf = 5, 4, len(lofar_array[0]), 6
 
             with tf_session.graph.as_default():
                 index_feed = IndexFeed(Nt)
@@ -124,7 +124,7 @@ if __name__ == '__main__':
             num_samples=1000, num_chains=1,parallel_iterations=10, num_leapfrog_steps=3,target_rate=0.6,
             num_burnin_steps=100,num_saem_samples=500,saem_maxsteps=3,initial_stepsize=7e-3,
             init_kern_params={'y_sigma':0.5,'variance':0.5e-4,'timescale':45.,'lengthscales':15., 'a':200., 'b':60.},
-            which_kernel=0, kernel_params={'resolution':3})
+            which_kernel=0, kernel_params={'resolution':3}, saem_batchsize=500)
         sess.run(inits)
         cont = True
         while cont:

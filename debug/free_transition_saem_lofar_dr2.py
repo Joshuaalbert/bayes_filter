@@ -144,8 +144,8 @@ if __name__ == '__main__':
     with sess.graph.as_default():
         data_obj = LofarDR2(sess, '/home/albert/git/bayes_tec/scripts/data/P126+65_compact_full_raw.h5',
                             'sol000','/home/albert/git/bayes_tec/scripts/data/image.pybdsm.srl.fits',
-                            max_screen_dirs=None, time_sel=slice(0,30,1),dir_sel=slice(0,5,1),ant_sel=slice(48,62,1),
-                            pol_sel=slice(0,1,1),index_feed_N=4)
+                            max_screen_dirs=None, time_sel=slice(0,30,1),dir_sel=slice(0,5,1),ant_sel=slice(48,55,1),
+                            pol_sel=slice(0,1,1),index_feed_N=2)
 
         free_transition = FreeTransitionSAEM(
             data_obj.freqs,
@@ -156,7 +156,8 @@ if __name__ == '__main__':
         filtered_res, inits = free_transition.filter_step(
             num_samples=1000, num_chains=1,parallel_iterations=10, num_leapfrog_steps=3,target_rate=0.6,
             num_burnin_steps=100,num_saem_samples=500,saem_maxsteps=10,initial_stepsize=7e-3,
-            init_kern_params={'variance':0.5e-4,'y_sigma':data_obj.y_sigma,'lengthscales':5.,'timescale':50., 'a':200, 'b':50.})
+            init_kern_params={'variance':0.5e-4,'y_sigma':data_obj.y_sigma,'lengthscales':5.,'timescale':50., 'a':200, 'b':50.},
+            which_kernel=0, kernel_params={'resolution':3})
         sess.run(inits, data_obj.feed_dict)
         cont = True
         iteration = 0
