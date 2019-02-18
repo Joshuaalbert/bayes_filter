@@ -285,8 +285,8 @@ class DTECToGainsSAEM(Target):
 
     def __init__(self, X, Xstar, Y_real, Y_imag, freqs,
                  y_sigma=0.2, variance=5e-4, lengthscales=15.0,
-                 a=250., b=50., timescale=30.,  resolution=3,
-                 fed_kernel = 'RBF', obs_type='DDTEC', variables=None, full_posterior=True):
+                 a=250., b=50., timescale=30.,
+                 fed_kernel = 'RBF', obs_type='DDTEC', variables=None, full_posterior=True, which_kernel = 0, kernel_params={}):
 
         self.obs_type = obs_type
         self.fed_kernel = fed_kernel
@@ -345,28 +345,42 @@ class DTECToGainsSAEM(Target):
         #Nf
         self.freqs = freqs
 
-        # kern = DTECIsotropicTimeGeneral(
-        #     variance=self.state.variance,
-        #     lengthscales=self.state.lengthscales,
-        #     timescale=self.state.timescale,
-        #     a=self.state.a,
-        #     b=self.state.b,
-        #     resolution=resolution,
-        #     fed_kernel=self.fed_kernel,
-        #     obs_type=self.obs_type,
-        #     squeeze=True)
-
-        kern = DTECIsotropicTimeGeneralODE(
-            variance=self.state.variance,
-            lengthscales=self.state.lengthscales,
-            timescale=self.state.timescale,
-            a=self.state.a,
-            b=self.state.b,
-            resolution=resolution,
-            fed_kernel=self.fed_kernel,
-            obs_type=self.obs_type,
-            rtol=1e-2,
-            squeeze=True)
+        if which_kernel == 0:
+            resolution = kernel_params.pop('resolution', 3)
+            kern = DTECIsotropicTimeGeneral(
+                variance=self.state.variance,
+                lengthscales=self.state.lengthscales,
+                timescale=self.state.timescale,
+                a=self.state.a,
+                b=self.state.b,
+                fed_kernel=self.fed_kernel,
+                obs_type=self.obs_type,
+                squeeze=True,
+                kernel_params = kernel_params)
+        if which_kernel == 1:
+            kern = DTECIsotropicTimeGeneralODE(
+                variance=self.state.variance,
+                lengthscales=self.state.lengthscales,
+                timescale=self.state.timescale,
+                a=self.state.a,
+                b=self.state.b,
+                fed_kernel=self.fed_kernel,
+                obs_type=self.obs_type,
+                squeeze=True,
+                ode_type='fixed',
+                kernel_params = kernel_params)
+        if which_kernel == 2:
+            kern = DTECIsotropicTimeGeneralODE(
+                variance=self.state.variance,
+                lengthscales=self.state.lengthscales,
+                timescale=self.state.timescale,
+                a=self.state.a,
+                b=self.state.b,
+                fed_kernel=self.fed_kernel,
+                obs_type=self.obs_type,
+                squeeze=True,
+                ode_type='adaptive',
+                kernel_params = kernel_params)
 
         # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
 

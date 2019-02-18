@@ -221,7 +221,7 @@ class FreeTransitionSAEM(object):
 
     def filter_step(self, num_samples=10, num_chains=1, parallel_iterations=10, num_leapfrog_steps=2, target_rate=0.6,
                     num_burnin_steps=0, num_saem_samples = 10, saem_maxsteps=5, initial_stepsize=5e-3,
-                    init_kern_params=None):
+                    init_kern_params=None, which_kernel=0, kernel_params={}):
         """
         Run a Bayes filter over the coordinate set.
 
@@ -269,6 +269,7 @@ class FreeTransitionSAEM(object):
             init_kern_params = {}
         target = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
                                  fed_kernel='RBF', obs_type='DDTEC', full_posterior=True,
+                                 which_kernel=which_kernel, kernel_params=kernel_params,
                                  **init_kern_params)
         variables = target.variables
         inits = tf.group([step_size.initializer for step_size in step_sizes]
@@ -287,7 +288,7 @@ class FreeTransitionSAEM(object):
 
                 target_saem = DTECToGainsSAEM(X, None, Y_real, Y_imag, self.freqs,
                                               fed_kernel='RBF', obs_type='DDTEC',
-                                              variables=variables)
+                                              variables=variables,which_kernel=which_kernel, kernel_params=kernel_params)
 
                 ###
                 hmc = tfp.mcmc.HamiltonianMonteCarlo(

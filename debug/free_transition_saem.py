@@ -7,7 +7,7 @@ from bayes_filter import float_type
 import sys
 from bayes_filter.data_feed import IndexFeed,TimeFeed,CoordinateFeed, DataFeed, init_feed, ContinueFeed
 from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references
-from bayes_filter.kernels import DTECIsotropicTimeGeneralODE
+from bayes_filter.kernels import DTECIsotropicTimeGeneralODE, DTECIsotropicTimeGeneral
 import astropy.time as at
 import numpy as np
 import pylab as plt
@@ -33,7 +33,7 @@ def simulated_ddtec(tf_session, lofar_array):
     class Simulated:
         def __init__(self):
 
-            Nt, Nd, Na, Nf = 30, 10, len(lofar_array[0]), 6
+            Nt, Nd, Na, Nf = 30, 4, len(lofar_array[0]), 6
 
             with tf_session.graph.as_default():
                 index_feed = IndexFeed(Nt)
@@ -59,8 +59,8 @@ def simulated_ddtec(tf_session, lofar_array):
                 init_star, next_star = init_feed(star_coord_feed)
                 init_cont, cont = init_feed(cont_feed)
                 tf_session.run([init, init_cont, init_star])
-                kern = DTECIsotropicTimeGeneralODE(variance=1e-2,timescale=45.,lengthscales=5., a=200., b=60.,
-                                         fed_kernel='RBF',obs_type='DDTEC',resolution=15, squeeze=True)
+                kern = DTECIsotropicTimeGeneral(variance=0.5e-4,timescale=45.,lengthscales=15., a=200., b=60.,
+                                         fed_kernel='RBF',obs_type='DDTEC', squeeze=True)
                 # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
 
                 from timeit import default_timer
@@ -123,7 +123,8 @@ if __name__ == '__main__':
         filtered_res, inits = free_transition.filter_step(
             num_samples=1000, num_chains=1,parallel_iterations=10, num_leapfrog_steps=3,target_rate=0.6,
             num_burnin_steps=100,num_saem_samples=500,saem_maxsteps=3,initial_stepsize=7e-3,
-            init_kern_params={'y_sigma':0.5,'variance':0.5e-2,'timescale':45.,'lengthscales':15., 'a':200., 'b':60.})
+            init_kern_params={'y_sigma':0.5,'variance':0.5e-4,'timescale':45.,'lengthscales':15., 'a':200., 'b':60.},
+            which_kernel=0, kernel_params={'resolution':3})
         sess.run(inits)
         cont = True
         while cont:

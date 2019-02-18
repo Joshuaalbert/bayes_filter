@@ -801,8 +801,8 @@ class DTECIsotropicTimeGeneral(object):
     allowed_obs_type = ['TEC', 'DTEC', 'DDTEC']
 
     def __init__(self, variance=0.1, lengthscales=10.0,
-                 a=250., b=50.,  timescale=30., resolution=10,
-                 fed_kernel='RBF', obs_type='TEC', squeeze=True):
+                 a=250., b=50.,  timescale=30.,
+                 fed_kernel='RBF', obs_type='TEC', squeeze=True, kernel_params={}):
         if obs_type not in DTECIsotropicTimeGeneral.allowed_obs_type:
             raise ValueError(
                 "{} is an invalid obs_type. Must be in {}.".format(obs_type, DTECIsotropicTimeGeneral.allowed_obs_type))
@@ -852,8 +852,7 @@ class DTECIsotropicTimeGeneral(object):
                 length_scale=self.timescale.constrained_value[:,0])
         self.fed_kernel = fed_kernel
         self.time_kernel = time_kernel
-
-        self.resolution = tf.convert_to_tensor(resolution, tf.int32)
+        self.resolution = tf.convert_to_tensor(kernel_params.pop('resolution', 3), tf.int32)
 
     def _calculate_rays(self, X):
         """
@@ -1027,16 +1026,15 @@ class DTECIsotropicTimeGeneralODE(object):
     allowed_obs_type = ['TEC', 'DTEC', 'DDTEC']
 
     def __init__(self, variance=0.1, lengthscales=10.0,
-                 a=250., b=50.,  timescale=30., resolution=10,
-                 atol=1e-6, rtol=1e-12,
-                 fed_kernel='RBF', obs_type='TEC', squeeze=True):
+                 a=250., b=50.,  timescale=30.,
+                 fed_kernel='RBF', obs_type='TEC', squeeze=True, ode_type='fixed', kernel_params={}):
         if obs_type not in DTECIsotropicTimeGeneral.allowed_obs_type:
             raise ValueError(
                 "{} is an invalid obs_type. Must be in {}.".format(obs_type, DTECIsotropicTimeGeneral.allowed_obs_type))
         self.obs_type = obs_type
         self.squeeze = squeeze
-        self.atol = atol
-        self.rtol = rtol
+        self.kernel_params = kernel_params
+        self.ode_type = ode_type
 
         if not isinstance(variance, Parameter):
             variance = Parameter(bijector=ScaledPositiveBijector(0.1), constrained_value=variance, shape=(-1,1))
@@ -1081,8 +1079,6 @@ class DTECIsotropicTimeGeneralODE(object):
                 length_scale=self.timescale.constrained_value[:,0])
         self.fed_kernel = fed_kernel
         self.time_kernel = time_kernel
-
-        self.resolution = tf.convert_to_tensor(resolution, tf.int32)
 
     def _calculate_ray_params(self, X):
         """
@@ -1194,8 +1190,7 @@ class DTECIsotropicTimeGeneralODE(object):
         l = tf.constant(0., float_type)
         u = tf.constant(1., float_type)
         # num_chains, N,Np
-        I,info = dblquad(K_func, l, u, lambda t: l, lambda t: u, shape, rtol=self.rtol, atol=self.atol,
-                         first_step=tf.constant(1./3.,float_type))
+        I,info = dblquad(K_func, l, u, lambda t: l, lambda t: u, shape, ode_type=self.ode_type, **self.kernel_params)
 
         if self.obs_type == 'TEC':
             n = 1
