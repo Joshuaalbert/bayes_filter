@@ -8,7 +8,7 @@ from bayes_filter.datapack import DataPack
 import sys
 from bayes_filter.data_feed import IndexFeed,TimeFeed,CoordinateFeed, DataFeed, init_feed, ContinueFeed
 from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references
-from bayes_filter.kernels import DTECIsotropicTimeGeneral
+from bayes_filter.kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
 import astropy.time as at
 import astropy.coordinates as ac
 import astropy.units as au
@@ -49,9 +49,9 @@ def lofar_array2(arrays):
     return res[0][[0,50, 51]], res[1][[0,50,51],:]
 
 
-def simulated_ddtec(tf_session, lofar_array, Nt=4, Nd=4):
+def simulated_ddtec(tf_session, lofar_array, Nt=4, Nd=4, kern_type=0):
     class Simulated:
-        def __init__(self):
+        def __init__(self, Nt=Nt, Nd=Nd, kern_type=kern_type):
 
             Na = len(lofar_array[0])
 
@@ -72,8 +72,18 @@ def simulated_ddtec(tf_session, lofar_array, Nt=4, Nd=4):
                 init, next = init_feed(coord_feed)
                 init_cont, cont = init_feed(cont_feed)
                 tf_session.run([init, init_cont])
-                kern = DTECIsotropicTimeGeneral(variance=0.5e-4,timescale=45.,lengthscales=15., a=200., b=60.,
-                                         fed_kernel='RBF',obs_type='DDTEC', squeeze=True)
+                if kern_type == 0:
+                    kern = DTECIsotropicTimeGeneral(variance=0.5e-4,timescale=45.,lengthscales=10., a=200., b=60.,
+                                             fed_kernel='RBF',obs_type='DDTEC', squeeze=True,
+                                                    kernel_params={'resolution':3})
+                elif kern_type == 1:
+                    kern = DTECIsotropicTimeGeneralODE(variance=0.5e-4, timescale=45., lengthscales=15., a=200., b=60.,
+                                                    fed_kernel='RBF', obs_type='DDTEC', squeeze=True, ode_type='fixed',
+                                                       kernel_params={'resolution':3})
+                elif kern_type == 2:
+                    kern = DTECIsotropicTimeGeneralODE(variance=0.5e-4, timescale=45., lengthscales=15., a=200., b=60.,
+                                                    fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                                                       ode_type='adaptive', kernel_params={'rtol':1e-2})
                 # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
 
                 size, time, rate = [],[],[]
@@ -81,16 +91,16 @@ def simulated_ddtec(tf_session, lofar_array, Nt=4, Nd=4):
                     t0 = default_timer()
                     K,N = tf_session.run([kern.K(next),tf.shape(next)[0]])
                     dt = default_timer() - t0
-                    print("N",N, "time",dt, "rate",N/dt)
+                    print(kern_type, N,dt,N/dt)
                     size.append(N)
                     time.append(dt)
                     rate.append(N/dt)
                     if not tf_session.run(cont):
                         break
-                    plt.scatter(size, time)
-                    plt.show()
-                    plt.scatter(size,rate)
-                    plt.show()
+                    # plt.scatter(size, time)
+                    # plt.show()
+                    # plt.scatter(size,rate)
+                    # plt.show()
     return Simulated()
 
 if __name__ == '__main__':
@@ -98,4 +108,18 @@ if __name__ == '__main__':
     sess = tf.Session(graph=tf.Graph())
     # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
     with sess.graph.as_default():
-        simulated_ddtec = simulated_ddtec(sess, lofar_array2(arrays()), Nt=4, Nd=4)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=4, kern_type=0)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=4, kern_type=1)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=4, kern_type=2)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=8, kern_type=0)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=8, kern_type=1)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=8, kern_type=2)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=16, kern_type=0)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=16, kern_type=1)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=16, kern_type=2)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=32, kern_type=0)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=32, kern_type=1)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=32, kern_type=2)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=64, kern_type=0)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=64, kern_type=1)
+        simulated_ddtec(sess, lofar_array(arrays()), Nt=4, Nd=64, kern_type=2)
