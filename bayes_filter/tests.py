@@ -14,7 +14,6 @@ from .settings import dist_type, float_type, jitter
 from .parameters import SphericalToCartesianBijector, ConstrainedBijector, ScaledPositiveBijector, ScaledBijector, Parameter, ScaledLowerBoundedBijector
 from .kernels import DTECFrozenFlow, DTECIsotropicTime, DTECIsotropicTimeLong, DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
 from .logprobabilities import DTECToGains
-from .filters import FreeTransition
 from .dblquad import dblquad
 from .plotting import DatapackPlotter, animate_datapack
 
@@ -344,10 +343,11 @@ def test_itrs_to_enu_with_references(tf_session, time_feed, lofar_array):
         dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(4, 1))
         Xd = tf.concat([ra, dec], axis=1)
         Xa = tf.constant(lofar_array[1], dtype=float_type)
-        coord_feed = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4])))
+        coord_feed = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
         init, next = init_feed(coord_feed)
         tf_session.run(init)
         out, N, slice_size = tf_session.run([next, coord_feed.N, coord_feed.slice_size])
+        print(out[0,:])
         assert out.shape[0] == slice_size * 4 * len(lofar_array[0])
         assert out.shape[1] == 13
         assert np.all(np.isclose(np.linalg.norm(out[:,1:4],axis=1), 1.))
@@ -606,6 +606,41 @@ def test_isotropic_time_general(tf_session, lofar_array):
         #
         # assert np.all(np.isclose(K,K_long))
 
+def test_ddtec_screen(tf_session, lofar_array):
+    with tf_session.graph.as_default():
+        index_feed = IndexFeed(1)
+        obstime_init = at.Time("2018-01-01T00:00:00.000", format='isot')
+        times = obstime_init.mjd*86400. + tf.cast(tf.linspace(0., 50., 9)[:, None],float_type)
+        time_feed = TimeFeed(index_feed, times)
+        M = 20
+        ra_vec = np.linspace(np.pi / 4 - 2.*np.pi/180., np.pi / 4 + 2.*np.pi/180., M)
+        dec_vec = np.linspace(np.pi / 4 - 2. * np.pi / 180., np.pi / 4 + 2. * np.pi / 180., M)
+        ra, dec = np.meshgrid(ra_vec, dec_vec, indexing='ij')
+        ra = ra.flatten()[:,None]
+        dec = dec.flatten()[:,None]
+        Xd = tf.concat([ra, dec], axis=1)
+        Xa = tf.constant(np.concatenate([ lofar_array[1][50:51,:]],axis=0), dtype=float_type)
+        coord_feed = CoordinateFeed(time_feed, Xd, Xa,
+                                    coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
+        init, next = init_feed(coord_feed)
+        kern = DTECIsotropicTimeGeneral(variance=0.5e-4,timescale=30.,lengthscales=5., a=300., b=90.,
+                                           fed_kernel='RBF',obs_type='DDTEC',squeeze=True,
+                                           kernel_params={'resolution':5})
+        K = kern.K(next)
+        tf_session.run([init])
+        K = tf_session.run(K)
+
+        s = np.mean(np.diag(K))
+        K /= s
+
+        L = np.sqrt(s)*np.linalg.cholesky(K + 1e-6*np.eye(K.shape[-1]))
+        ddtecs = np.einsum("ab,b->a",L, np.random.normal(size=L.shape[0])).reshape((M,M))
+        import pylab as plt
+        plt.imshow(np.sin(-8.448e9/140e6*ddtecs))
+        plt.colorbar()
+        plt.savefig("sim_ddtecs.png")
+        plt.show()
+
 def test_isotropic_time_general_ode(tf_session, lofar_array):
     with tf_session.graph.as_default():
         index_feed = IndexFeed(1)
@@ -619,11 +654,12 @@ def test_isotropic_time_general_ode(tf_session, lofar_array):
         coord_feed = CoordinateFeed(time_feed, Xd, Xa,
                                     coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
         init, next = init_feed(coord_feed)
-        kern = DTECIsotropicTimeGeneralODE(variance=5e-2,timescale=30.,lengthscales=5., a=250., b=100.,
-                                           fed_kernel='RBF',obs_type='DDTEC',atol=1e-12, rtol=1e-2, squeeze=True)
+        kern = DTECIsotropicTimeGeneralODE(variance=5e-2,timescale=30.,lengthscales=18., a=300., b=90.,
+                                           fed_kernel='RBF',obs_type='DTEC',squeeze=True,
+                                           ode_type='fixed',kernel_params={'rtol':1e-6,'atol':1e-6})
         K, info = kern.K(next, full_output=True)
         tf_session.run([init])
-        K,info = tf_session.run([K, info])
+        [K] = tf_session.run([K])
         print(info)
         import pylab as plt
         plt.imshow(K)

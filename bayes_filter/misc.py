@@ -276,6 +276,13 @@ def diagonal_jitter(N):
     """
     return tf.diag(tf.fill([N],tf.convert_to_tensor(jitter,float_type)))
 
+def safe_cholesky(K):
+    n = tf.shape(K)[-1]
+    s = tf.reduce_mean(tf.matrix_diag_part(K),axis=-1)
+    K = K/s
+    L = tf.sqrt(s)*tf.cholesky(K + diagonal_jitter(n))
+    return L
+
 def timer():
     """
     Return system time as tensorflow op

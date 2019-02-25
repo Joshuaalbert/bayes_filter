@@ -3,7 +3,7 @@ import tensorflow_probability as tfp
 from .kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
 from .parameters import Parameter, ScaledPositiveBijector, ConstrainedBijector, ScaledLowerBoundedBijector
 from collections import namedtuple
-from .misc import diagonal_jitter, log_normal_solve_fwhm, K_parts
+from .misc import diagonal_jitter, log_normal_solve_fwhm, K_parts, safe_cholesky
 from .settings import float_type
 import numpy as np
 
@@ -119,7 +119,7 @@ class DTECToGains(Target):
         K = kern.K(self.Xconcat)
         # with tf.control_dependencies([tf.print("asserting initial K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
         # N+Ns, N+Ns
-        self.L = tf.cholesky(K + diagonal_jitter(self.Nh))
+        self.L = safe_cholesky(K)
 
     def transform_samples(self, y_sigma, variance, lengthscales, a, b, timescale, dtec):
         """
@@ -154,7 +154,7 @@ class DTECToGains(Target):
         # with tf.control_dependencies([tf.print("asserting final transform K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
 
         # num_chains, N+Ns, N+Ns
-        L = tf.cholesky(K + diagonal_jitter(self.Nh))
+        L = safe_cholesky(K)
 
         # transform
         # num_chains, N+Ns
@@ -241,7 +241,7 @@ class DTECToGains(Target):
         with tf.control_dependencies(
                 [tf.assert_equal(tf.is_finite(K), True),
                  tf.print(*[(n, getattr(state,n)) for n in state._fields],*self.ss)]):
-            L = tf.cholesky(K + diagonal_jitter(self.Nh))
+            L = safe_cholesky(K)
 
         # transform
         # num_chains, N+Ns
@@ -286,7 +286,7 @@ class DTECToGainsSAEM(Target):
     def __init__(self, X, Xstar, Y_real, Y_imag, freqs,
                  y_sigma=0.2, variance=5e-4, lengthscales=15.0,
                  a=250., b=50., timescale=30.,
-                 fed_kernel = 'RBF', obs_type='DDTEC', variables=None, full_posterior=True, which_kernel = 0, kernel_params={}):
+                 fed_kernel = 'RBF', obs_type='DDTEC', variables=None, full_posterior=True, which_kernel = 0, kernel_params={}, L=None, Nh=None):
 
         self.obs_type = obs_type
         self.fed_kernel = fed_kernel
@@ -390,9 +390,14 @@ class DTECToGainsSAEM(Target):
         # K = kern.matrix(self.Xconcat[:, 4:7],self.Xconcat[:, 4:7])
         # with tf.control_dependencies([tf.print("asserting initial K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
         # N+Ns, N+Ns
-        self.L = tf.cholesky(K + diagonal_jitter(self.Nh))
-        self.L.set_shape(tf.TensorShape([None,None]))
 
+
+        L_new = safe_cholesky(K)
+        L_new.set_shape(tf.TensorShape([Nh,Nh]))
+        if L is None:
+            self.L = L_new
+        else:
+            self.L = tf.cond(tf.equal(tf.shape(L)[0], self.Nh), lambda: L, lambda: L_new)
 
     def unconstrained_states(self, variables=None):
         if variables is None:
@@ -424,15 +429,21 @@ class DTECToGainsSAEM(Target):
     def logp_dtec(self, constrained_dtec, dtec_variance):
         """
         Calculate log N[dtec | 0, L L^T] = -0.5*(B dtec)^T L^-T L^-1 B dtec - |L| - 0.5*D*log(2*pi)
+
         :param constrained_dtec: float_type, tf.Tensor [M]
-            DTEC constrained
+        :param dtec_variance: float_type, tf.Tensor [M]
         :return: float_type, tf.Tensor, scalar
         """
+
         num_dims = tf.cast(tf.shape(constrained_dtec)[0], float_type)
-        alpha = tf.matrix_triangular_solve(self.L+tf.eye(tf.shape(constrained_dtec)[0], dtype=float_type)*dtec_variance,
+        #M,1
+        alpha = tf.matrix_triangular_solve(self.L+tf.matrix_diag(dtec_variance), #tf.eye(tf.shape(constrained_dtec)[0], dtype=float_type)*dtec_variance,
                                            constrained_dtec[:,None],lower=True)
+        #scalar
         logp = - 0.5 * tf.reduce_sum(tf.square(alpha))
+        #scalar
         logp -= 0.5 * num_dims * np.log(2 * np.pi)
+        #scalar
         logp -= tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)))
         return logp
 
@@ -512,11 +523,9 @@ class DTECToGainsSAEM(Target):
         #marginal logprob
         # num_chains
         logp = self.logp_gains(dtec_transformed)
-        # dtec_prior = tfp.distributions.MultivariateNormalDiag(loc=None,scale_identity_multiplier=None)
-        # num_chains
         #[1]
-        logdet = tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)), axis=0, keepdims=True)
-        # dtec_logp = dtec_prior.log_prob(dtec) - logdet
+        logdet = tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)), axis=-1, keepdims=True)
+        # num_chains
         dtec_logp = -0.5*tf.reduce_sum(tf.square(dtec),axis=1) - logdet - 0.5*tf.cast(self.N+self.Ns, float_type)*np.log(2*np.pi)
 
         #print(logp, dtec_logp)
