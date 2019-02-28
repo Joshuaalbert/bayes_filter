@@ -37,7 +37,7 @@ def simulated_ddtec(tf_session, lofar_array):
     class Simulated:
         def __init__(self):
 
-            Nt, Nd, Na, Nf = 2, 20, len(lofar_array[0]), 6
+            Nt, Nd, Na, Nf = 2, 5, len(lofar_array[0]), 6
             index_n = Nt
             with tf_session.graph.as_default():
                 index_feed = IndexFeed(index_n)
@@ -129,7 +129,7 @@ if __name__ == '__main__':
 
         filtered_res, inits = free_transition.filter_step(
             num_samples=2000, num_chains=2,parallel_iterations=10, num_leapfrog_steps=3,target_rate=0.6,
-            num_burnin_steps=1000,num_saem_samples=2000,saem_maxsteps=10,initial_stepsize=7e-3,
+            num_burnin_steps=1000,num_saem_samples=2000,saem_population=20, saem_maxsteps=10,initial_stepsize=7e-3,
             init_kern_params={'y_sigma':0.5,'variance':0.5e-4,'timescale':45.,'lengthscales':25., 'a':500., 'b':60.},
             which_kernel=0, kernel_params={'resolution':3}, saem_batchsize=500, slice_size=simulated_ddtec.slice_size)
         sess.run(inits[0])

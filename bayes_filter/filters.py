@@ -18,7 +18,8 @@ class FreeTransitionSAEM(object):
 
     def filter_step(self, num_samples=10, num_chains=1, parallel_iterations=10, num_leapfrog_steps=2, target_rate=0.6,
                     num_burnin_steps=0, num_saem_samples = 10, saem_maxsteps=5, initial_stepsize=5e-3,
-                    init_kern_params=None, which_kernel=0, kernel_params={}, saem_batchsize=500, slice_size=None):
+                    init_kern_params=None, which_kernel=0, kernel_params={}, saem_batchsize=500, slice_size=None,
+                    saem_population=20):
         """
 
         :param num_samples:
@@ -133,9 +134,10 @@ class FreeTransitionSAEM(object):
             # last state as initial point
 
             rhat = tfp.mcmc.potential_scale_reduction(samples)
-            nonconverged_rhat = [tf.greater(tfp.stats.percentile(rh, 90.), 1.2) for rh in rhat]
-            with tf.control_dependencies([tf.print(nonconverged_rhat, tf.reduce_any(nonconverged_rhat), rhat)]):
-                do_again = tf.reduce_any(nonconverged_rhat)
+
+            nonconverged_rhat = [tfp.stats.percentile(rh, 90.) for rh in rhat]
+            with tf.control_dependencies([tf.print(nonconverged_rhat)]):
+                do_again = tf.reduce_any([tf.greater(r, 1.2) for r in nonconverged_rhat])
 
                 def resample(samples=samples):
                     state_init = [s[-1, ...] for s in samples]
@@ -241,6 +243,15 @@ class FreeTransitionSAEM(object):
             var_dtec = tf.reduce_mean(tf.square(constrained_dtec), axis=0) - tf.square(mean_dtec)
 
             def log_prob(variables, mean_dtec=mean_dtec, var_dtec=var_dtec):
+                """
+                Get the log-probability of variables.
+
+                :param variables: float_type, tf.Tensor, [batch, num_params]
+                    Batched variables.
+                :param mean_dtec: float_type, tf.Tensor, [M]
+                :param var_dtec: float_type, tf.Tensor, [M]
+                :return: float_type, tf.Tensor, [batch]
+                """
                 X_learn, Y_real_learn, Y_imag_learn,mean_dtec, var_dtec = random_sample(
                     [X, Y_real, Y_imag, mean_dtec, var_dtec],
                     saem_batchsize)
@@ -258,13 +269,13 @@ class FreeTransitionSAEM(object):
                     return tf.identity(posterior_log_prob)
 
             def saem_objective(variables):
-                objective = -tf.map_fn(log_prob,variables)
+                objective = -log_prob(variables) # -tf.map_fn(log_prob, variables)
                 return objective
 
             with tf.control_dependencies([tf.print("Rhat:", tfp.stats.percentile(rhat_dtec, [10., 50., 90.]))]):
                 saem_mstep = tfp.optimizer.differential_evolution_minimize(saem_objective,
                                                           initial_position=var_copy,
-                                                          population_size=10,
+                                                          population_size=saem_population,
                                                           max_iterations=saem_maxsteps)
 
             return tf.assign(variables, saem_mstep.position)

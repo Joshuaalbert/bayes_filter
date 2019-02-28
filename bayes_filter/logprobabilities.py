@@ -286,7 +286,8 @@ class DTECToGainsSAEM(Target):
     def __init__(self, X, Xstar, Y_real, Y_imag, freqs,
                  y_sigma=0.2, variance=5e-4, lengthscales=15.0,
                  a=250., b=50., timescale=30.,
-                 fed_kernel = 'RBF', obs_type='DDTEC', variables=None, full_posterior=True, which_kernel = 0, kernel_params={}, L=None, Nh=None):
+                 fed_kernel = 'RBF', obs_type='DDTEC', variables=None, full_posterior=True, which_kernel = 0,
+                 kernel_params={}, L=None, Nh=None, squeeze=True):
 
         self.obs_type = obs_type
         self.fed_kernel = fed_kernel
@@ -319,7 +320,7 @@ class DTECToGainsSAEM(Target):
             variables = tf.get_variable('state_vars', initializer=constrained_vars)
         self.variables = variables
 
-        self.variables_split = DTECToGainsSAEM.DTECToGainsParams(*[tf.reshape(self.variables[i:i+1], (-1, 1)) for i in range(len(bijectors))])
+        self.variables_split = DTECToGainsSAEM.DTECToGainsParams(*[tf.reshape(self.variables[..., i:i+1], (-1, 1)) for i in range(len(bijectors))])
 
         super(DTECToGainsSAEM, self).__init__(bijectors=bijectors, distributions=distributions, unconstrained_values=self.variables_split)
 
@@ -355,7 +356,7 @@ class DTECToGainsSAEM(Target):
                 b=self.state.b,
                 fed_kernel=self.fed_kernel,
                 obs_type=self.obs_type,
-                squeeze=True,
+                squeeze=squeeze,
                 kernel_params = kernel_params)
         if which_kernel == 1:
             kern = DTECIsotropicTimeGeneralODE(
@@ -366,7 +367,7 @@ class DTECToGainsSAEM(Target):
                 b=self.state.b,
                 fed_kernel=self.fed_kernel,
                 obs_type=self.obs_type,
-                squeeze=True,
+                squeeze=squeeze,
                 ode_type='fixed',
                 kernel_params = kernel_params)
         if which_kernel == 2:
@@ -378,26 +379,30 @@ class DTECToGainsSAEM(Target):
                 b=self.state.b,
                 fed_kernel=self.fed_kernel,
                 obs_type=self.obs_type,
-                squeeze=True,
+                squeeze=squeeze,
                 ode_type='adaptive',
                 kernel_params = kernel_params)
 
         # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
 
 
-        # N+Ns, N+Ns
+        # (batch), N+Ns, N+Ns
         K = kern.K(self.Xconcat)
+        self.K = K
         # K = kern.matrix(self.Xconcat[:, 4:7],self.Xconcat[:, 4:7])
         # with tf.control_dependencies([tf.print("asserting initial K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
         # N+Ns, N+Ns
 
 
         L_new = safe_cholesky(K)
-        L_new.set_shape(tf.TensorShape([Nh,Nh]))
+        if squeeze:
+            L_new.set_shape(tf.TensorShape([Nh,Nh]))
+        else:
+            L_new.set_shape(tf.TensorShape([None, Nh, Nh]))
         if L is None:
             self.L = L_new
         else:
-            self.L = tf.cond(tf.equal(tf.shape(L)[0], self.Nh), lambda: L, lambda: L_new)
+            self.L = tf.cond(tf.equal(tf.shape(L)[-1], self.Nh), lambda: L, lambda: L_new)
 
     def unconstrained_states(self, variables=None):
         if variables is None:
@@ -432,19 +437,24 @@ class DTECToGainsSAEM(Target):
 
         :param constrained_dtec: float_type, tf.Tensor [M]
         :param dtec_variance: float_type, tf.Tensor [M]
-        :return: float_type, tf.Tensor, scalar
+        :return: float_type, tf.Tensor, [batch_size]
         """
 
         num_dims = tf.cast(tf.shape(constrained_dtec)[0], float_type)
-        #M,1
-        alpha = tf.matrix_triangular_solve(self.L+tf.matrix_diag(dtec_variance), #tf.eye(tf.shape(constrained_dtec)[0], dtype=float_type)*dtec_variance,
-                                           constrained_dtec[:,None],lower=True)
-        #scalar
-        logp = - 0.5 * tf.reduce_sum(tf.square(alpha))
+
+        # (batch), M, M
+        L = safe_cholesky(self.K + tf.matrix_diag(dtec_variance))
+        # (batch), M, 1
+        constrained_dtec = tf.broadcast_to(constrained_dtec, tf.shape(L)[:-1])[...,None]
+        # (batch), M
+        alpha = tf.matrix_triangular_solve(L, #tf.eye(tf.shape(constrained_dtec)[0], dtype=float_type)*dtec_variance,
+                                           constrained_dtec,lower=True)[..., 0]
+        #(batch)
+        logp = - 0.5 * tf.reduce_sum(tf.square(alpha),axis=-1)
         #scalar
         logp -= 0.5 * num_dims * np.log(2 * np.pi)
-        #scalar
-        logp -= tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)))
+        #(batch)
+        logp -= tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)), axis=-1)
         return logp
 
     def logp_params(self, variables):

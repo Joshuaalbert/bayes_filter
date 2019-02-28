@@ -278,7 +278,7 @@ def diagonal_jitter(N):
 
 def safe_cholesky(K):
     n = tf.shape(K)[-1]
-    s = tf.reduce_mean(tf.matrix_diag_part(K),axis=-1)
+    s = tf.reduce_mean(tf.matrix_diag_part(K),axis=-1, keep_dims=True)[..., None]
     K = K/s
     L = tf.sqrt(s)*tf.cholesky(K + diagonal_jitter(n))
     return L
