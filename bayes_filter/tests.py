@@ -12,10 +12,11 @@ import astropy.time as at
 from .frames import ENU
 from .settings import dist_type, float_type, jitter
 from .parameters import SphericalToCartesianBijector, ConstrainedBijector, ScaledPositiveBijector, ScaledBijector, Parameter, ScaledLowerBoundedBijector
-from .kernels import DTECFrozenFlow, DTECIsotropicTime, DTECIsotropicTimeLong, DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
+from .kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
 from .logprobabilities import DTECToGains
 from .dblquad import dblquad
 from .plotting import DatapackPlotter, animate_datapack
+import pylab as plt
 
 @pytest.fixture
 def tf_graph():
@@ -403,120 +404,6 @@ def test_scaled(tf_session):
 ###
 # Kernels
 
-def test_frozen_flow(tf_session, lofar_array):
-    with tf_session.graph.as_default():
-        index_feed = IndexFeed(9)
-        obstime_init = at.Time("2018-01-01T00:00:00.000", format='isot')
-        times = obstime_init.mjd*86400. + tf.cast(tf.linspace(0., 100., 9)[:, None],float_type)
-        time_feed = TimeFeed(index_feed, times)
-        ra = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(2, 1))
-        dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(2, 1))
-        Xd = tf.concat([ra, dec], axis=1)
-        Xa = tf.constant(np.concatenate([lofar_array[1][0:1,:], lofar_array[1]],axis=0), dtype=float_type)
-        coord_feed = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_6D))
-        init, next = init_feed(coord_feed)
-        tf_session.run(init)
-        kern = DTECFrozenFlow(variance=0.07,velocity=[0.1, 0., 0.],lengthscales=5., fed_kernel='RBF',obs_type='DDTEC',resolution=5, squeeze=True)
-        from timeit import default_timer
-        t0 = default_timer()
-        K = tf_session.run(kern.K(next, coord_feed.dims))
-        L = np.linalg.cholesky(K+1e-6*np.eye(K.shape[0]))
-        assert True #pos def
-        y = np.einsum('ab,bc->ac',L,np.random.normal(size=(K.shape[0],50)))
-        # assert K.shape[0] == 2*40*63
-        print(default_timer() - t0)
-        import pylab as plt
-        plt.imshow(K,cmap='jet')
-        plt.colorbar()
-        plt.show()
-        y = y.reshape((9, 1,62, 50))
-        plt.plot(y[:,0,51,:])
-        plt.show()
-
-def test_isotropic_time(tf_session, lofar_array):
-    with tf_session.graph.as_default():
-        index_feed = IndexFeed(1)
-        obstime_init = at.Time("2018-01-01T00:00:00.000", format='isot')
-        times = obstime_init.mjd*86400. + tf.cast(tf.linspace(0., 50., 9)[:, None],float_type)
-        time_feed = TimeFeed(index_feed, times)
-        ra = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
-        dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
-        Xd = tf.concat([ra, dec], axis=1)
-        Xa = tf.constant(np.concatenate([lofar_array[1][0:1,:], lofar_array[1]],axis=0), dtype=float_type)
-        coord_feed = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_6D))
-        init, next = init_feed(coord_feed)
-
-        index_feed = IndexFeed(2)
-        obstime_init = at.Time("2018-01-01T00:00:00.000", format='isot')
-        times = obstime_init.mjd * 86400. + tf.cast(tf.linspace(0., 50., 9)[:, None], float_type)
-        time_feed = TimeFeed(index_feed, times)
-        ra = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
-        dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
-        Xd = tf.concat([ra, dec], axis=1)
-        Xa = tf.constant(np.concatenate([lofar_array[1][0:1, :], lofar_array[1]], axis=0), dtype=float_type)
-        coord_feed2 = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_6D))
-        init2, next2 = init_feed(coord_feed2)
-
-        kern = DTECIsotropicTime(variance=0.07,timescale=30.,lengthscales=5., fed_kernel='RBF',obs_type='DDTEC',resolution=5, squeeze=False)
-        kern_ff = DTECFrozenFlow(variance=0.07,velocity=[0., 0., 0.],lengthscales=5., fed_kernel='RBF',obs_type='DDTEC',resolution=5, squeeze=False)
-        tf_session.run([init, init2])
-        K, K_ff = tf_session.run([kern.K(next, coord_feed.dims), kern_ff.K(next, coord_feed.dims)])
-        assert np.all(np.isclose(K,K_ff))
-        tf_session.run([init,init2])
-        K, K_ff = tf_session.run([kern.K(next, coord_feed.dims, next2, coord_feed2.dims),
-                                  kern_ff.K(next, coord_feed.dims, next2, coord_feed2.dims)])
-        assert K.shape == K_ff.shape
-        assert K.shape == (1, 1*2*62, 2*2*62)
-
-        ###
-        # build without reshapes
-
-        Xt = np.linspace(0., 100., 2)[:,None]
-        Xd = np.random.normal(size=(5,3))
-        Xd /= np.linalg.norm(Xd,axis=1,keepdims=True)
-        Xa = 10.*np.random.normal(size=(6,3))
-        Xa[0:2,:] = 0.
-
-        X = make_coord_array(Xt, Xd, Xa)
-        X0 = make_coord_array(Xt, Xd[1:,:], Xa[1:, :])
-
-        kern = DTECIsotropicTime(variance=0.07, timescale=30., lengthscales=5., fed_kernel='RBF', obs_type='DTEC',
-                                 resolution=5, squeeze=False)
-        K = tf_session.run(kern.K(X, (2, 5,6), X0, (2, 4,5)))
-
-        X = make_coord_array(Xt, Xd, Xa[1:,:])
-        X0 = make_coord_array(Xt, Xd[1:, :], Xa[2:, :])
-
-
-        kern = DTECIsotropicTimeLong(variance=0.07,timescale=30.,lengthscales=5., fed_kernel='RBF',obs_type='DTEC',resolution=5, squeeze=False)
-
-        K_long = tf_session.run(kern.K(X, (2, 5,5), X0, (2, 4,4)))
-        # I00 = kern.K(X, (2,5,3), X, (2,5,3))
-        # I10 = kern.K(X, (2, 5, 3), X0, (2, 5, 3))
-        # I01 = kern.K(X0, (2, 5, 3), X, (2, 5, 3))
-        # I11 = kern.K(X0, (2, 5, 3), X0, (2, 5, 3))
-        #
-        # K_long = tf_session.run(I00 + I11 - I01 - I10)
-
-        assert np.all(np.isclose(K,K_long))
-
-
-
-
-
-        # L = np.linalg.cholesky(K+1e-6*np.eye(K.shape[1]))
-        # assert True #pos def
-        # y = np.einsum('sab,bc->sac',L,np.random.normal(size=(K.shape[1],50)))
-        # assert K.shape[0] == 2*40*63
-        # print(default_timer() - t0)
-        # import pylab as plt
-        # plt.imshow(K[0,:,:],cmap='jet')
-        # plt.colorbar()
-        # plt.show()
-        # y = y.reshape((1, 9, 1,62, 50))
-        # plt.plot(y[0, :,0,51,:])
-        # plt.show()
-
 def test_isotropic_time_general(tf_session, lofar_array):
     with tf_session.graph.as_default():
         index_feed = IndexFeed(1)
@@ -559,52 +446,6 @@ def test_isotropic_time_general(tf_session, lofar_array):
         L = np.linalg.cholesky(K1 + 1e-6*np.eye(K1.shape[-1]))
         ddtecs = np.einsum("ab,bc->ac",L, np.random.normal(size=L.shape)).reshape(list(dims)+[L.shape[0]])
         print(ddtecs[:,:,51].var(), 0.01**2/ddtecs[:,:,51].var())
-
-
-
-        # assert np.all(np.isclose(K1, K2))
-
-        # kern_ff = DTECFrozenFlow(variance=0.07,velocity=[0., 0., 0.],lengthscales=5., fed_kernel='RBF',obs_type='DDTEC',resolution=5, squeeze=False)
-        # tf_session.run([init, init2])
-        # K, K_ff = tf_session.run([kern.K(next, coord_feed.dims), kern_ff.K(next, coord_feed.dims)])
-        # assert np.all(np.isclose(K,K_ff))
-        # tf_session.run([init,init2])
-        # K, K_ff = tf_session.run([kern.K(next, coord_feed.dims, next2, coord_feed2.dims),
-        #                           kern_ff.K(next, coord_feed.dims, next2, coord_feed2.dims)])
-        # assert K.shape == K_ff.shape
-        # assert K.shape == (1, 1*2*62, 2*2*62)
-        #
-        # ###
-        # # build without reshapes
-        #
-        # Xt = np.linspace(0., 100., 2)[:,None]
-        # Xd = np.random.normal(size=(5,3))
-        # Xd /= np.linalg.norm(Xd,axis=1,keepdims=True)
-        # Xa = 10.*np.random.normal(size=(6,3))
-        # Xa[0:2,:] = 0.
-        #
-        # X = make_coord_array(Xt, Xd, Xa)
-        # X0 = make_coord_array(Xt, Xd[1:,:], Xa[1:, :])
-        #
-        # kern = DTECIsotropicTime(variance=0.07, timescale=30., lengthscales=5., fed_kernel='RBF', obs_type='DTEC',
-        #                          resolution=5, squeeze=False)
-        # K = tf_session.run(kern.K(X, (2, 5,6), X0, (2, 4,5)))
-        #
-        # X = make_coord_array(Xt, Xd, Xa[1:,:])
-        # X0 = make_coord_array(Xt, Xd[1:, :], Xa[2:, :])
-        #
-        #
-        # kern = DTECIsotropicTimeLong(variance=0.07,timescale=30.,lengthscales=5., fed_kernel='RBF',obs_type='DTEC',resolution=5, squeeze=False)
-        #
-        # K_long = tf_session.run(kern.K(X, (2, 5,5), X0, (2, 4,4)))
-        # # I00 = kern.K(X, (2,5,3), X, (2,5,3))
-        # # I10 = kern.K(X, (2, 5, 3), X0, (2, 5, 3))
-        # # I01 = kern.K(X0, (2, 5, 3), X, (2, 5, 3))
-        # # I11 = kern.K(X0, (2, 5, 3), X0, (2, 5, 3))
-        # #
-        # # K_long = tf_session.run(I00 + I11 - I01 - I10)
-        #
-        # assert np.all(np.isclose(K,K_long))
 
 def test_ddtec_screen(tf_session, lofar_array):
     with tf_session.graph.as_default():
@@ -671,6 +512,67 @@ def test_isotropic_time_general_ode(tf_session, lofar_array):
         # ddtecs = np.einsum("ab,bc->ac",L, np.random.normal(size=L.shape)).reshape(list(dims)+[L.shape[0]])
         # print(ddtecs[:,:,51].var(), 0.01**2/ddtecs[:,:,51].var())
 
+def test_kernel_equivalence(tf_session, lofar_array):
+    with tf_session.graph.as_default():
+        index_feed = IndexFeed(1)
+        obstime_init = at.Time("2018-01-01T00:00:00.000", format='isot')
+        times = obstime_init.mjd*86400. + tf.cast(tf.linspace(0., 50., 9)[:, None],float_type)
+        time_feed = TimeFeed(index_feed, times)
+        ra = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
+        dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
+        Xd = tf.concat([ra, dec], axis=1)
+        Xa = tf.constant(np.concatenate([lofar_array[1][0:1,:], lofar_array[1]],axis=0), dtype=float_type)
+        coord_feed = CoordinateFeed(time_feed, Xd, Xa,
+                                    coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
+        init, next = init_feed(coord_feed)
+        kernels = [DTECIsotropicTimeGeneralODE(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+                   fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                   ode_type='adaptive', kernel_params={'rtol':1e-6, 'atol':1e-6}),
+                   DTECIsotropicTimeGeneralODE(variance=1e9**2,timescale=30.,lengthscales=10., a=300., b=90.,
+                                           fed_kernel='RBF',obs_type='DDTEC',squeeze=True,
+                                           ode_type='fixed',kernel_params={'resolution':5}),
+                   DTECIsotropicTimeGeneral(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+                                            fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                                            kernel_params={'resolution': 4}),
+                   DTECIsotropicTimeGeneral(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+                                            fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                                            kernel_params={'resolution': 6}),
+                   DTECIsotropicTimeGeneral(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+                                            fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                                            kernel_params={'resolution': 8}),
+                   DTECIsotropicTimeGeneral(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+                                            fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                                            kernel_params={'resolution': 10}),
+                   DTECIsotropicTimeGeneral(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+                                            fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                                            kernel_params={'resolution': 12}),
+                   DTECIsotropicTimeGeneral(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+                                            fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                                            kernel_params={'resolution': 14}),
+                   DTECIsotropicTimeGeneral(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+                                            fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                                            kernel_params={'resolution': 16}),
+                   DTECIsotropicTimeGeneral(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+                                            fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
+                                            kernel_params={'resolution': 18})
+                   ]
+        K = [kern.K(next) for kern in kernels]
+        tf_session.run([init])
+        K = tf_session.run(K)
+        print(np.sqrt(np.mean(np.diag(K[0]))))
+        #1/m^3 km
+        for k in K:
+            print(np.mean(np.abs(K[0] - k)/np.mean(np.diag(K[0]))))
+        # plt.imshow(K[0])
+        # plt.colorbar()
+        # plt.show()
+        # plt.imshow(K[1])
+        # plt.colorbar()
+        # plt.show()
+        # plt.imshow(K[2])
+        # plt.colorbar()
+        # plt.show()
+
 def test_K_parts(tf_session, lofar_array):
     with tf_session.graph.as_default():
         Xt = np.linspace(0., 100., 2)[:, None]
@@ -679,7 +581,7 @@ def test_K_parts(tf_session, lofar_array):
         Xa = 10. * np.random.normal(size=(6, 3))
         Xa[0:2, :] = 0.
 
-        kern = DTECIsotropicTime(variance=0.07, timescale=30., lengthscales=5., fed_kernel='RBF', obs_type='DDTEC',
+        kern = DTECIsotropicTimeGeneral(variance=0.07, timescale=30., lengthscales=5., fed_kernel='RBF', obs_type='DDTEC',
                                  resolution=5, squeeze=True)
 
         X = make_coord_array(Xt, Xd, Xa)
