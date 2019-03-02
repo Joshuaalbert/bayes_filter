@@ -389,7 +389,7 @@ class DTECIsotropicTimeGeneralODE(object):
                                bring_together(X2, [slice(0, 1, 1), slice(10, 13, 1), slice(7, 10, 1)]),  # i0,alpha0
                                bring_together(X2, [slice(0, 1, 1), slice(10, 13, 1), slice(4, 7, 1)])  # i,alpha0
                                ], axis=0)
-            min2, dy2, bsec2 = self._calculate_ray_params(X2)
+            ymin2, dy2, bsec2 = self._calculate_ray_params(X2)
 
         jac = bsec1[:,:,None]*bsec2[:,None,:]
 
