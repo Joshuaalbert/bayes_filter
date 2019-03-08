@@ -525,7 +525,7 @@ def test_kernel_equivalence(tf_session, lofar_array):
         coord_feed = CoordinateFeed(time_feed, Xd, Xa,
                                     coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
         init, next = init_feed(coord_feed)
-        kernels = [DTECIsotropicTimeGeneralODE(variance=1e9**2, timescale=30., lengthscales=10., a=300., b=90.,
+        kernels = [DTECIsotropicTimeGeneralODE(variance=2e11**2, timescale=30., lengthscales=10., a=300., b=90.,
                    fed_kernel='RBF', obs_type='DDTEC', squeeze=True,
                    ode_type='adaptive', kernel_params={'rtol':1e-6, 'atol':1e-6}),
                    DTECIsotropicTimeGeneralODE(variance=1e9**2,timescale=30.,lengthscales=10., a=300., b=90.,
@@ -562,7 +562,7 @@ def test_kernel_equivalence(tf_session, lofar_array):
         print(np.sqrt(np.mean(np.diag(K[0]))))
         #1/m^3 km
         for k in K:
-            print(np.mean(np.abs(K[0] - k)/np.mean(np.diag(K[0]))))
+            print(np.mean(np.abs(K[1] - k)/np.mean(np.diag(K[1]))))
         # plt.imshow(K[0])
         # plt.colorbar()
         # plt.show()
