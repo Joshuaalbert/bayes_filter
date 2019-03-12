@@ -18,7 +18,7 @@ class DTECIsotropicTimeGeneral(object):
     """
     allowed_obs_type = ['TEC', 'DTEC', 'DDTEC']
 
-    def __init__(self, variance=0.1, lengthscales=10.0,
+    def __init__(self, variance=1., lengthscales=10.0,
                  a=250., b=50.,  timescale=30., ref_location=[0.,0.,0.],
                  fed_kernel='RBF', obs_type='TEC', squeeze=True, kernel_params={}):
         if obs_type not in DTECIsotropicTimeGeneral.allowed_obs_type:
@@ -28,7 +28,8 @@ class DTECIsotropicTimeGeneral(object):
         self.squeeze = squeeze
 
         if not isinstance(variance, Parameter):
-            variance = Parameter(bijector=ScaledPositiveBijector(1e10**2), constrained_value=variance, shape=(-1,1))
+            #1e3*1e-16*1e9 = 1e-4
+            variance = Parameter(bijector=ScaledPositiveBijector(1.), constrained_value=variance, shape=(-1,1))
         if not isinstance(lengthscales, Parameter):
             lengthscales = Parameter(bijector=ScaledPositiveBijector(10.), constrained_value=lengthscales, shape=(-1,1))
         if not isinstance(timescale, Parameter):
@@ -48,25 +49,25 @@ class DTECIsotropicTimeGeneral(object):
 
         if fed_kernel in ["RBF", "SE"]:
             fed_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
-                amplitude=1e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0]),
+                amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
                 length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["M32"]:
             fed_kernel = tfp.positive_semidefinite_kernels.MaternThreeHalves(
-                amplitude=1e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0]),
+                amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternThreeHalves(
                 length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["M52"]:
             fed_kernel = tfp.positive_semidefinite_kernels.MaternFiveHalves(
-                amplitude=1e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0]),
+                amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternFiveHalves(
                 length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["M12", "OU"]:
             fed_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
-                amplitude=1e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0]),
+                amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
                 length_scale=self.timescale.constrained_value[:,0])
@@ -210,7 +211,7 @@ class DTECIsotropicTimeGeneral(object):
             n = 1
             result = K_time * I
         if self.obs_type == 'DTEC':
-            n = 2
+            n = 21e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0])
         if self.obs_type == 'DDTEC':
             n = 4
         if n > 1:
@@ -221,6 +222,8 @@ class DTECIsotropicTimeGeneral(object):
             result = K_time * tf.add_n(out)
         if sym:
             result = 0.5 * (tf.transpose(result, (0, 2, 1)) + result)
+        #num_chains, N, Np
+        result = self.variance.constrained_value[:,0,None,None]*result
         if self.squeeze:
             return tf.squeeze(result)
         else:
@@ -252,7 +255,7 @@ class DTECIsotropicTimeGeneralODE(object):
         self.ode_type = ode_type
 
         if not isinstance(variance, Parameter):
-            variance = Parameter(bijector=ScaledPositiveBijector(1e10**2), constrained_value=variance, shape=(-1,1))
+            variance = Parameter(bijector=ScaledPositiveBijector(1.), constrained_value=variance, shape=(-1,1))
         if not isinstance(lengthscales, Parameter):
             lengthscales = Parameter(bijector=ScaledPositiveBijector(10.), constrained_value=lengthscales, shape=(-1,1))
         if not isinstance(timescale, Parameter):
@@ -271,25 +274,25 @@ class DTECIsotropicTimeGeneralODE(object):
 
         if fed_kernel in ["RBF", "SE"]:
             fed_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
-                amplitude=1e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0]),
+                amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
                 length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["M32"]:
             fed_kernel = tfp.positive_semidefinite_kernels.MaternThreeHalves(
-                amplitude=1e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0]),
+                amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternThreeHalves(
                 length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["M52"]:
             fed_kernel = tfp.positive_semidefinite_kernels.MaternFiveHalves(
-                amplitude=1e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0]),
+                amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternFiveHalves(
                 length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["M12", "OU"]:
             fed_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
-                amplitude=1e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0]),
+                amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
                 length_scale=self.timescale.constrained_value[:,0])
@@ -429,6 +432,8 @@ class DTECIsotropicTimeGeneralODE(object):
             result = K_time * tf.add_n(out)
         if sym:
             result = 0.5*(tf.transpose(result,(0,2,1)) + result)
+        # num_chains, N, Np
+        result = self.variance.constrained_value[:, 0, None, None] * result
         if self.squeeze:
             if full_output:
                 return tf.squeeze(result), info
