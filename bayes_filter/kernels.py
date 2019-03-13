@@ -211,7 +211,7 @@ class DTECIsotropicTimeGeneral(object):
             n = 1
             result = K_time * I
         if self.obs_type == 'DTEC':
-            n = 21e3*1e-16*tf.sqrt(self.variance.constrained_value[:,0])
+            n = 2
         if self.obs_type == 'DDTEC':
             n = 4
         if n > 1:
