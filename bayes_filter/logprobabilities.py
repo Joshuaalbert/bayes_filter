@@ -193,7 +193,7 @@ class DTECToGains(Target):
         TODO how to specify multiple returns in a tuple
         """
         #Nf
-        invfreqs = -8.448e9*tf.reciprocal(self.freqs)
+        invfreqs = -8.448e6*tf.reciprocal(self.freqs)
         #..., Nf
         phase = dtec[..., None] * invfreqs
         real_part = tf.cos(phase)
@@ -284,7 +284,7 @@ class DTECToGainsSAEM(Target):
                                       ['y_sigma', 'variance', 'lengthscales', 'a', 'b', 'timescale'])
 
     def __init__(self, X, Xstar, Y_real, Y_imag, freqs,
-                 y_sigma=0.2, variance=5e-4, lengthscales=15.0,
+                 y_sigma=0.2, variance=0.17, lengthscales=15.0,
                  a=250., b=50., timescale=30.,
                  fed_kernel = 'RBF', obs_type='DDTEC', variables=None, full_posterior=True, which_kernel = 0,
                  kernel_params={}, L=None, Nh=None, squeeze=True):
@@ -301,15 +301,15 @@ class DTECToGainsSAEM(Target):
 
         bijectors = DTECToGainsSAEM.DTECToGainsParams(
             ScaledLowerBoundedBijector(1e-2,0.2),
-            ScaledLowerBoundedBijector(5e-6,5e-5),
+            ScaledLowerBoundedBijector(1e-3,1.),
             ScaledLowerBoundedBijector(3., 15.),
-            ScaledLowerBoundedBijector(100.,100.),
+            ScaledLowerBoundedBijector(100.,250.),
             ScaledLowerBoundedBijector(10.,100.),
             ScaledLowerBoundedBijector(10.,50.))
 
         distributions = DTECToGainsSAEM.DTECToGainsParams(
             y_sigma = tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-2, 1., 0.5)),
-            variance = tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-5, 1e-3, 0.5)),
+            variance = tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-3, 1e-1, 0.5)),
             lengthscales = tfp.distributions.Normal(tf.convert_to_tensor(20.,dtype=float_type), tf.convert_to_tensor(15.,dtype=float_type)),
             a = tfp.distributions.Normal(tf.convert_to_tensor(250.,dtype=float_type), tf.convert_to_tensor(150.,dtype=float_type)),
             b = tfp.distributions.Normal(tf.convert_to_tensor(70.,dtype=float_type), tf.convert_to_tensor(50.,dtype=float_type)),
@@ -509,7 +509,7 @@ class DTECToGainsSAEM(Target):
         TODO how to specify multiple returns in a tuple
         """
         #Nf
-        invfreqs = -8.448e9*tf.reciprocal(self.freqs)
+        invfreqs = -8.448e6*tf.reciprocal(self.freqs)
         #..., Nf
         phase = dtec[..., None] * invfreqs
         real_part = tf.cos(phase)

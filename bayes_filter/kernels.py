@@ -1,8 +1,111 @@
 import tensorflow as tf
+import numpy as np
 import tensorflow_probability as tfp
 from .settings import float_type
 from .parameters import Parameter, ScaledPositiveBijector, SphericalToCartesianBijector
 from .dblquad import dblquad
+
+from tensorflow_probability.python.internal import dtype_util
+from tensorflow_probability.python.positive_semidefinite_kernels.internal import util
+
+
+def _validate_arg_if_not_none(arg, assertion, validate_args):
+  if arg is None:
+    return arg
+  with tf.control_dependencies([assertion(arg)] if validate_args else []):
+    result = tf.identity(arg)
+  return result
+
+class Histogram(tfp.positive_semidefinite_kernels.PositiveSemidefiniteKernel):
+    def __init__(self,heights,edgescales, feature_ndims=1, validate_args=False,name='Histogram'):
+        """Construct an Histogram kernel instance.
+
+        Args:
+        heights: floating point `Tensor` heights of spectum histogram.
+            Must be broadcastable with `edgescales` and inputs to
+            `apply` and `matrix` methods.
+        edgescales: floating point `Tensor` that controls how wide the
+            spectrum bins are. These are lengthscales, and edges are actually 1/``edgescales``.
+            Must be broadcastable with
+            `heights` and inputs to `apply` and `matrix` methods.
+        feature_ndims: Python `int` number of rightmost dims to include in the
+            squared difference norm in the exponential.
+        validate_args: If `True`, parameters are checked for validity despite
+            possibly degrading runtime performance
+        name: Python `str` name prefixed to Ops created by this class.
+        """
+        with tf.name_scope(name, values=[heights, edgescales]) as name:
+            dtype = dtype_util.common_dtype([heights, edgescales], float_type)
+            if heights is not None:
+                heights = tf.convert_to_tensor(
+                    heights, name='heights', dtype=dtype)
+            self._heights = _validate_arg_if_not_none(
+              heights, tf.assert_positive, validate_args)
+            if edgescales is not None:
+                edgescales = tf.convert_to_tensor(
+                    edgescales, name='edgescales', dtype=dtype)
+            self._edgescales = _validate_arg_if_not_none(
+              edgescales, tf.assert_positive, validate_args)
+            tf.assert_same_float_dtype([self._heights, self._edgescales])
+        super(Histogram, self).__init__(
+            feature_ndims, dtype=dtype, name=name)
+
+    @property
+    def heights(self):
+        """Heights parameter."""
+        return self._heights
+
+    @property
+    def edgescales(self):
+        """Edgescales parameter."""
+        return self._edgescales
+
+    def _batch_shape(self):
+        scalar_shape = tf.TensorShape([])
+        return tf.broadcast_static_shape(
+            scalar_shape if self.heights is None else self.heights.shape,
+            scalar_shape if self.edgescales is None else self.edgescales.shape)
+
+    def _batch_shape_tensor(self):
+        return tf.broadcast_dynamic_shape(
+            [] if self.heights is None else tf.shape(self.heights),
+            [] if self.edgescales is None else tf.shape(self.edgescales))
+
+    def _apply(self, x1, x2, param_expansion_ndims=0):
+        # Use util.sqrt_with_finite_grads to avoid NaN gradients when `x1 == x2`.norm = util.sqrt_with_finite_grads(
+        #x1 = B,Np,D -> B,Np,1,D
+        #x2 = B,N,D -> B,1,N,D
+        #B, Np,N
+        with tf.control_dependencies([tf.assert_equal(tf.shape(self.heights)[-1]+1, tf.shape(self.edgescales)[-1])]):
+            norm = util.sqrt_with_finite_grads(util.sum_rightmost_ndims_preserving_shape(
+                tf.squared_difference(x1, x2), self.feature_ndims))
+        #B(1),1,Np,N
+        norm = tf.expand_dims(norm,-(param_expansion_ndims + 1))
+
+        #B(1), H+1, 1, 1
+        edgescales = util.pad_shape_right_with_ones(
+            self.edgescales, ndims=param_expansion_ndims)
+        norm /= edgescales
+        norm *= 2*np.pi
+
+        zeros = tf.zeros(tf.shape(self.heights)[:-1],dtype=self.heights.dtype)[...,None]
+        # B(1),1+H+1
+        heights = tf.concat([zeros, self.heights, zeros],axis=-1)
+        # B(1), H+1
+        dheights = heights[..., 1:] - heights[..., :-1]
+        #B(1), H+1, 1, 1
+        dheights = util.pad_shape_right_with_ones(
+            dheights, ndims=param_expansion_ndims)
+        #B(1), H+1, 1, 1
+        dheights /= edgescales
+        def _sinc(x):
+            return tf.sin(x)*tf.reciprocal(x)
+        #B(1), H+1, N, Np
+        sincs = tf.where(tf.less(norm, tf.constant(1e-15,dtype=norm.dtype)), tf.ones_like(norm), _sinc(norm))
+        #B(1), H+1, N, Np
+        result = dheights * sincs
+        #B(1), N,Np
+        return tf.reduce_sum(result,axis=-3)
 
 
 class DTECIsotropicTimeGeneral(object):

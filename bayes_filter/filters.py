@@ -6,6 +6,9 @@ from collections import namedtuple
 from .logprobabilities import DTECToGains, DTECToGainsSAEM
 from .misc import flatten_batch_dims, timer, random_sample
 
+# from .misc import plot_graph
+# import pylab as plt
+
 class FreeTransitionSAEM(object):
     def __init__(self, freqs, data_feed: DataFeed, coord_feed: CoordinateFeed, star_coord_feed: CoordinateFeed):
         self.coord_feed = coord_feed
@@ -37,6 +40,7 @@ class FreeTransitionSAEM(object):
         :param saem_batchsize:
         :return:
         """
+
         joint_dataset = tf.data.Dataset.zip((self.data_feed.feed,
                                              self.coord_feed.feed,
                                              self.star_coord_feed.feed,
@@ -45,6 +49,7 @@ class FreeTransitionSAEM(object):
                                              self.star_coord_dim_feed.feed))
 
         joint_iterator = joint_dataset.make_initializable_iterator()
+
 
         step_sizes = [
             tf.get_variable(
@@ -63,6 +68,7 @@ class FreeTransitionSAEM(object):
         dtec_screen_init = tf.zeros(tf.shape(Xstar)[0:1], float_type)
         dtec_init = tf.concat([dtec_init_data, dtec_screen_init], axis=0)
 
+
         if init_kern_params is None:
             init_kern_params = {}
         proxy_target = DTECToGainsSAEM(X, Xstar, Y_real, Y_imag, self.freqs,
@@ -70,14 +76,21 @@ class FreeTransitionSAEM(object):
                                  which_kernel=which_kernel, kernel_params=kernel_params,Nh=slice_size,
                                  **init_kern_params)
 
-        L_variable = tf.get_variable('L_variable',initializer=proxy_target.L)#tf.zeros((slice_size, slice_size),float_type))
+
+        #proxy_target.L
+        L_variable = tf.get_variable('L_variable',initializer=lambda: tf.zeros((slice_size, slice_size),float_type),use_resource=True)#tf.zeros((slice_size, slice_size),float_type))
+
 
 
         variables = proxy_target.variables
 
-        init1 = joint_iterator.initializer
+        init1 = tf.group([joint_iterator.initializer] + [variables.initializer])
         init2 = L_variable.initializer
-        init3 = tf.group([step_size.initializer for step_size in step_sizes] + [joint_iterator.initializer] + [variables.initializer])
+        init3 = tf.assign(L_variable,proxy_target.L)
+        init4 = tf.group([step_size.initializer for step_size in step_sizes] + [joint_iterator.initializer] + [variables.initializer])
+
+
+
         # with tf.control_dependencies([tf.group([step_size.initializer for step_size in step_sizes] + [joint_iterator.initializer] + [proxy_target.variables.initializer])]):
         #     with tf.control_dependencies([L_variable.initializer]):
         #         inits = tf.tuple([joint_iterator.initializer])
@@ -102,13 +115,14 @@ class FreeTransitionSAEM(object):
                                           **init_kern_params)
 
 
-            # def trace(states, previous_kernel_results):
-            #     """Trace the transformed dtec, stepsize, log_acceptance, log_prob"""
-            #     dtec_constrained = target.transform_samples(states[0])
-            #     return dtec_constrained, \
-            #            previous_kernel_results.step_size, \
-            #            previous_kernel_results.log_acceptance_correction, \
-            #            previous_kernel_results.target_log_prob
+            def trace_step(states, previous_kernel_results):
+                """Trace the transformed dtec, stepsize, log_acceptance, log_prob"""
+                return previous_kernel_results.extra.step_size_assign
+                # dtec_constrained = target.transform_samples(states[0])
+                # return dtec_constrained, \
+                #        previous_kernel_results.step_size, \
+                #        previous_kernel_results.log_acceptance_correction, \
+                #        previous_kernel_results.target_log_prob
 
             ###
             hmc = tfp.mcmc.HamiltonianMonteCarlo(
@@ -122,10 +136,10 @@ class FreeTransitionSAEM(object):
                 state_gradients_are_stopped=True)
 
             # Run the chain (with burn-in maybe).
-            samples = tfp.mcmc.sample_chain(
+            samples, stepsize = tfp.mcmc.sample_chain(
                 num_results=num_samples,
                 num_burnin_steps=num_burnin_steps,
-                trace_fn = None,
+                trace_fn = trace_step,
                 return_final_kernel_results=False,
                 current_state=[dtec_init],
                 kernel=hmc,
@@ -141,10 +155,10 @@ class FreeTransitionSAEM(object):
 
                 def resample(samples=samples):
                     state_init = [s[-1, ...] for s in samples]
-                    more_samples = tfp.mcmc.sample_chain(
+                    more_samples, stepsize = tfp.mcmc.sample_chain(
                         num_results=num_samples,
                         num_burnin_steps=0,
-                        trace_fn=None,
+                        trace_fn=trace_step,
                         return_final_kernel_results=False,
                         current_state=state_init,
                         kernel=hmc,
@@ -153,7 +167,7 @@ class FreeTransitionSAEM(object):
 
                 samples = tf.cond(do_again, resample, lambda: samples, strict=True)
 
-            return samples, target
+            return samples, target, stepsize
 
         ###
         # Hyper parameter solution
@@ -225,7 +239,7 @@ class FreeTransitionSAEM(object):
                                               stddev=tf.constant(0.1, dtype=float_type),
                                               dtype=float_type) + dtec_init_data
 
-            unconstrained_samples, target_saem = _sample(X, Y_real, Y_imag, dtec_init_saem,
+            unconstrained_samples, target_saem,_ = _sample(X, Y_real, Y_imag, dtec_init_saem,
                                                          Xstar=None,
                                                          variables=var_copy,
                                                          L=L_start[:N,:N],
@@ -296,6 +310,8 @@ class FreeTransitionSAEM(object):
         t0 = timer()
         with tf.control_dependencies(
                 [t0, tf.cond(tf.greater(saem_maxsteps, 0),lambda: saem_step(variables, L_start=L_variable), lambda: variables)]):
+
+
             with tf.control_dependencies([tf.print("Sampling with m:",proxy_target.constrained_states(variables))]):
 
                 dtec_init_main = tf.random_normal(shape=tf.concat([[num_chains], tf.shape(dtec_init)], axis=0),
@@ -303,9 +319,9 @@ class FreeTransitionSAEM(object):
                                                    dtype=float_type) + dtec_init
 
 
-                unconstrained_samples, target = _sample(X, Y_real, Y_imag, dtec_init_main,
+                unconstrained_samples, target, stepsize = _sample(X, Y_real, Y_imag, dtec_init_main,
                                                              Xstar=Xstar,
-                                                             variables=variables, L=L_variable,
+                                                             variables=variables, L=None,#L_variable,
                                                              num_samples=num_samples,
                                                             full_posterior=True)
 
@@ -329,7 +345,7 @@ class FreeTransitionSAEM(object):
 
         TAResult = namedtuple('TAResult', ['parameters', 'dtec', 'Y_real', 'Y_imag','post_logp',
                                            'dtec_star', 'Y_real_star', 'Y_imag_star',
-                                           'cont', 'ess', 'rhat','extra','sample_time', 'phase', 'phase_star'])
+                                           'cont', 'ess', 'rhat','extra','sample_time', 'phase', 'phase_star', 'stepsize'])
 
         ExtraResults = namedtuple('ExtraResults',['Y_real_data', 'Y_imag_data', 'X', 'Xstar', 'X_dim', 'Xstar_dim', 'freqs'])
 
@@ -353,7 +369,7 @@ class FreeTransitionSAEM(object):
         Y_imag = tf.reshape(Y_imag, tf.concat([X_dim, [-1]], axis=0))
 
 
-        with tf.control_dependencies([unconstrained_samples[0]]):
+        with tf.control_dependencies([unconstrained_samples[0],tf.print('Stepsize:',step_sizes[0])]):
             t1 = timer()
 
         output = TAResult(
@@ -374,5 +390,6 @@ class FreeTransitionSAEM(object):
             extra = ExtraResults(Y_real, Y_imag, X, Xstar, X_dim, Xstar_dim, self.freqs),
             sample_time=t1-t0,
             phase=phase_X,
-            phase_star=phase_Xstar)
-        return output, (init1, init2, init3)
+            phase_star=phase_Xstar,
+            stepsize=stepsize)
+        return output, (init1, init2, init3, init4)

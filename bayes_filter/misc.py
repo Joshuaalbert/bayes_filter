@@ -13,7 +13,35 @@ from scipy.spatial.distance import pdist
 from . import logging
 import os
 from .datapack import DataPack
+import networkx as nx
 
+
+
+
+def plot_graph(tf_graph,ax=None, filter=False):
+    '''Plot a DAG using NetworkX'''
+
+    def children(op):
+        return set(op for out in op.outputs for op in out.consumers())
+
+    def get_graph(tf_graph):
+        """Creates dictionary {node: {child1, child2, ..},..} for current
+        TensorFlow graph. Result is compatible with networkx/toposort"""
+
+        ops = tf_graph.get_operations()
+        g = {}
+        for op in ops:
+            c = children(op)
+            if len(c) == 0 and filter:
+                continue
+            g[op] = c
+        return g
+
+    def mapping(node):
+        return node.name
+    G = nx.DiGraph(get_graph(tf_graph))
+    nx.relabel_nodes(G, mapping, copy=False)
+    nx.draw(G, cmap = plt.get_cmap('jet'), with_labels = True, ax=ax)
 
 def make_example_datapack(Nd, Nf, Nt, pols=None, time_corr=50., dir_corr=0.5 * np.pi / 180., tec_scale=0.02,
                           tec_noise=1e-3, name='test.hdf5', clobber=False):

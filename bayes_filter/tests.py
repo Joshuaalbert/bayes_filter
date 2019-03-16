@@ -4,7 +4,7 @@ import tensorflow_probability as tfp
 import numpy as np
 import sys, os
 from .data_feed import CoordinateFeed, TimeFeed, IndexFeed, DataFeed, init_feed, ContinueFeed, CoordinateDimFeed
-from .misc import flatten_batch_dims, load_array_file, make_coord_array, timer, diagonal_jitter, log_normal_solve_fwhm, K_parts, random_sample, make_example_datapack
+from .misc import flatten_batch_dims, load_array_file, make_coord_array, timer, diagonal_jitter, log_normal_solve_fwhm, K_parts, random_sample, make_example_datapack, safe_cholesky
 from .coord_transforms import itrs_to_enu_6D, tf_coord_transform, itrs_to_enu_with_references
 import astropy.units as au
 import astropy.coordinates as ac
@@ -12,10 +12,10 @@ import astropy.time as at
 from .frames import ENU
 from .settings import dist_type, float_type, jitter
 from .parameters import SphericalToCartesianBijector, ConstrainedBijector, ScaledPositiveBijector, ScaledBijector, Parameter, ScaledLowerBoundedBijector
-from .kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
+from .kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE, Histogram
 from .logprobabilities import DTECToGains
 from .dblquad import dblquad
-from .plotting import DatapackPlotter, animate_datapack
+from .plotting import DatapackPlotter, animate_datapack,plot_vornoi_map
 import pylab as plt
 
 @pytest.fixture
@@ -404,6 +404,39 @@ def test_scaled(tf_session):
 ###
 # Kernels
 
+def test_histogram(tf_session):
+    with tf_session.graph.as_default():
+        
+        heights = tf.constant(np.arange(50)+1,dtype=float_type)
+        edgescales = tf.constant(np.arange(51)+1, dtype=float_type)
+        kern = Histogram(heights, edgescales)
+        x = tf.constant(np.linspace(0.,10.,100)[:,None],dtype=float_type)
+
+        h,e = tf_session.run([heights, edgescales])
+        for i in range(50):
+            plt.bar(0.5*(1./e[i+1]+1./e[i]),h[i],1./e[i+1]-1./e[i])
+        plt.savefig("test_histogram_spectrum.png")
+        plt.close('all')
+
+        K = kern.matrix(x,x)
+        K,L = tf_session.run([K,safe_cholesky(K)])
+        plt.imshow(K)
+        plt.colorbar()
+        plt.savefig("test_histogram.png")
+        plt.close("all")
+        y = np.dot(L, np.random.normal(size=(100,3)))
+        plt.plot(np.linspace(0,10.,100),y)
+        plt.savefig("test_histogram_sample.png")
+        plt.close("all")
+
+        x0 = tf.constant([[0.]],dtype=float_type)
+        K_line = kern.matrix(x, x0)
+        K_line = tf_session.run(K_line)
+        plt.plot(np.linspace(0,10,100),K_line[:,0])
+        plt.savefig("test_histogram_kline.png")
+        plt.close('all')
+
+
 def test_isotropic_time_general(tf_session, lofar_array):
     with tf_session.graph.as_default():
         index_feed = IndexFeed(1)
@@ -464,7 +497,7 @@ def test_ddtec_screen(tf_session, lofar_array):
         coord_feed = CoordinateFeed(time_feed, Xd, Xa,
                                     coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
         init, next = init_feed(coord_feed)
-        kern = DTECIsotropicTimeGeneral(variance=0.5e-4,timescale=30.,lengthscales=5., a=300., b=90.,
+        kern = DTECIsotropicTimeGeneral(variance=0.17,timescale=30.,lengthscales=15., a=300., b=90.,
                                            fed_kernel='RBF',obs_type='DDTEC',squeeze=True,
                                            kernel_params={'resolution':5})
         K = kern.K(next)
@@ -477,7 +510,7 @@ def test_ddtec_screen(tf_session, lofar_array):
         L = np.sqrt(s)*np.linalg.cholesky(K + 1e-6*np.eye(K.shape[-1]))
         ddtecs = np.einsum("ab,b->a",L, np.random.normal(size=L.shape[0])).reshape((M,M))
         import pylab as plt
-        plt.imshow(np.sin(-8.448e9/140e6*ddtecs))
+        plt.imshow(np.sin(-8.448e6/140e6*ddtecs))
         plt.colorbar()
         plt.savefig("sim_ddtecs.png")
         plt.show()
@@ -907,30 +940,7 @@ def simulated_ddtec(tf_session, lofar_array2):
 def test_free_transition(tf_session, simulated_ddtec):
     with tf_session.graph.as_default():
 
-        free_transition = FreeTransition(
-            simulated_ddtec.freqs,
-            simulated_ddtec.data_feed,
-            simulated_ddtec.coord_feed,
-            simulated_ddtec.star_coord_feed)
-        filtered_res = free_transition.filter(num_samples=10, num_chains=1, parallel_iterations=10, num_leapfrog_steps=2,
-                               target_rate=0.5, num_burnin_steps=0)
-
-        res = tf_session.run(filtered_res)
-
-# if __name__ == '__main__':
-#     tf_session = tf_session()
-#     simulated_ddtec = simulated_ddtec()
-#     with tf_session().graph.as_default():
-#
-#         free_transition = FreeTransition(
-#             simulated_ddtec.freqs,
-#             simulated_ddtec.data_feed,
-#             simulated_ddtec.coord_feed,
-#             simulated_ddtec.star_coord_feed)
-#         filtered_res = free_transition.filter(num_samples=10, num_chains=1, parallel_iterations=10, num_leapfrog_steps=2,
-#                                target_rate=0.5, num_burnin_steps=0)
-#
-#         res = tf_session.run(filtered_res)
+        pass
 
 def test_dblquad(tf_session):
     with tf_session.graph.as_default():
@@ -942,3 +952,11 @@ def test_dblquad(tf_session):
         print(tf_session.run([I,info]))
 
         assert np.all(np.isclose(tf_session.run(I), -1/6.))
+
+
+def test_plot_vornoi_map():
+    fig, ax = plt.subplots(1,1,figsize=(5,5))
+    points = np.random.uniform(size=(5,2))
+    colors = np.random.uniform(size=5)
+    plot_vornoi_map(points, colors, ax=ax, alpha=1.,radius=100)
+    plt.show()
