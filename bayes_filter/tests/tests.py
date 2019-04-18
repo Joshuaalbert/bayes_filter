@@ -2,180 +2,25 @@ import pytest
 import tensorflow as tf
 import tensorflow_probability as tfp
 import numpy as np
-import sys, os
-from .data_feed import CoordinateFeed, TimeFeed, IndexFeed, DataFeed, init_feed, ContinueFeed, CoordinateDimFeed
-from .misc import flatten_batch_dims, load_array_file, make_coord_array, timer, diagonal_jitter, log_normal_solve_fwhm, K_parts, random_sample, make_example_datapack, safe_cholesky
-from .coord_transforms import itrs_to_enu_6D, tf_coord_transform, itrs_to_enu_with_references
+import os
+from bayes_filter.feeds import CoordinateFeed, TimeFeed, IndexFeed, DataFeed, init_feed, CoordinateDimFeed
+from bayes_filter.misc import flatten_batch_dims, load_array_file, make_coord_array, timer, diagonal_jitter, log_normal_solve_fwhm, K_parts, random_sample, \
+    safe_cholesky
+from bayes_filter.coord_transforms import itrs_to_enu_6D, tf_coord_transform, itrs_to_enu_with_references
 import astropy.units as au
 import astropy.coordinates as ac
 import astropy.time as at
-from .frames import ENU
-from .settings import dist_type, float_type, jitter
-from .parameters import SphericalToCartesianBijector, ConstrainedBijector, ScaledPositiveBijector, ScaledBijector, Parameter, ScaledLowerBoundedBijector
-from .kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE, Histogram
-from .logprobabilities import DTECToGains
-from .dblquad import dblquad
-from .plotting import DatapackPlotter, animate_datapack,plot_vornoi_map
+from bayes_filter.frames import ENU
+from bayes_filter.settings import dist_type, float_type, jitter
+from bayes_filter.parameters import SphericalToCartesianBijector, ConstrainedBijector, ScaledPositiveBijector, ScaledBijector, Parameter, ScaledLowerBoundedBijector
+from bayes_filter.kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE, Histogram
+from bayes_filter.dblquad import dblquad
+from bayes_filter.plotting import animate_datapack,plot_vornoi_map
 import pylab as plt
-
-@pytest.fixture
-def tf_graph():
-    return tf.Graph()
-
-
-@pytest.fixture
-def tf_session(tf_graph):
-    sess = tf.Session(graph=tf_graph)
-    return sess
-
-@pytest.fixture
-def arrays():
-    return os.path.dirname(sys.modules["bayes_filter"].__file__)
-
-@pytest.fixture
-def lofar_array(arrays):
-    lofar_array = os.path.join(arrays, 'arrays/lofar.hba.antenna.cfg')
-    return load_array_file(lofar_array)
-
-@pytest.fixture
-def lofar_array2(arrays):
-    lofar_array = os.path.join(arrays, 'arrays/lofar.hba.antenna.cfg')
-    res = load_array_file(lofar_array)
-    return res[0][::2], res[1][::2,:]
 
 
 ###
 # Feed tests
-
-@pytest.fixture
-def index_feed(tf_graph):
-    with tf_graph.as_default():
-        return IndexFeed(2)
-
-
-@pytest.fixture
-def time_feed(tf_graph, index_feed):
-    with tf_graph.as_default():
-        times = tf.linspace(0.,100.,9)[:,None]
-        return TimeFeed(index_feed,times)
-
-
-@pytest.fixture
-def coord_feed(tf_graph, time_feed, lofar_array):
-    with tf_graph.as_default():
-        ra = np.pi/4 + 2.*np.pi/180. * tf.random_normal(shape=(4,1))
-        dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(4, 1))
-        Xd = tf.concat([ra,dec],axis=1)
-        Xa = tf.constant(lofar_array[1],dtype=float_type)
-        return CoordinateFeed(time_feed, Xd, Xa, coord_map = tf_coord_transform(itrs_to_enu_6D))
-
-@pytest.fixture
-def data_feed(tf_graph, index_feed):
-    with tf_graph.as_default():
-        shape1 = (1,2,3,4)
-        shape2 = (1, 2, 3, 4)
-        data1 = tf.ones(shape1)
-        data2 = tf.ones(shape2)
-        return DataFeed(index_feed, data1, data2)
-
-
-def test_index_feed(tf_session):
-    with tf_session.graph.as_default():
-        index_feed = IndexFeed(2)
-        init, next = init_feed(index_feed)
-        tf_session.run(init)
-        out = tf_session.run(next)
-        assert out[1] - out[0] == index_feed._step
-
-
-def test_time_feed(tf_session, index_feed):
-    with tf_session.graph.as_default():
-        times = tf.linspace(0., 10., 9)[:, None]
-        time_feed = TimeFeed(index_feed, times)
-        init, next = init_feed(time_feed)
-        tf_session.run(init)
-        out,slice_size = tf_session.run([next,time_feed.slice_size])
-        assert out.shape == (slice_size, 1)
-
-
-def test_continue_feed(tf_session):
-    with tf_session.graph.as_default():
-        index_feed = IndexFeed(2)
-        times = tf.linspace(0., 10., 3)[:, None]
-        time_feed = TimeFeed(index_feed, times)
-        cont_feed = ContinueFeed(time_feed)
-        init, next = init_feed(cont_feed)
-        tf_session.run(init)
-        # out = tf_session.run([next])
-        assert tf_session.run(next) == True
-        assert tf_session.run(next) == False
-        assert tf_session.run(next) == False
-        assert tf_session.run(next) == False
-
-        index_feed = IndexFeed(3)
-        times = tf.linspace(0., 10., 3)[:, None]
-        time_feed = TimeFeed(index_feed, times)
-        cont_feed = ContinueFeed(time_feed)
-        init, next = init_feed(cont_feed)
-        tf_session.run(init)
-        # out = tf_session.run([next])
-        assert tf_session.run(next) == False
-        assert tf_session.run(next) == False
-        assert tf_session.run(next) == False
-        assert tf_session.run(next) == False
-
-def test_coord_feed(tf_session, time_feed):
-    with tf_session.graph.as_default():
-        X1 = tf.linspace(0., 1., 50)[:, None]
-        X2 = tf.linspace(0., 1., 5)[:, None]
-        coord_feed = CoordinateFeed(time_feed, X1, X2)
-        init, next = init_feed(coord_feed)
-        tf_session.run(init)
-        out,N,slice_size = tf_session.run([next, coord_feed.N, coord_feed.slice_size])
-        assert out.shape[0] == slice_size*50*5
-
-
-def test_data_feed(tf_session, index_feed):
-    with tf_session.graph.as_default():
-        shape1 = (5, 2, 3, 4)
-        shape2 = (5, 2, 3, 4)
-        data1 = tf.ones(shape1)
-        data2 = tf.ones(shape2)
-        data_feed = DataFeed(index_feed, data1, data2)
-        init, next = init_feed(data_feed)
-        tf_session.run(init)
-        out,N_slice,D, slice_size = tf_session.run([next, data_feed.N_slice, data_feed.D, data_feed.slice_size])
-        for o in out:
-            # assert o.shape[-1] == D
-            # assert o.shape[0] == N_slice
-            assert o.shape == (slice_size*6, 4)
-
-        shape1 = (5, 2, 3, 4)
-        shape2 = (5, 2, 3, 4)
-        data1 = tf.ones(shape1)
-        data2 = tf.ones(shape2)
-        data_feed = DataFeed(index_feed, data1, data2, event_size=2)
-        init, next = init_feed(data_feed)
-        tf_session.run(init)
-        out, N_slice, D, slice_size = tf_session.run([next, data_feed.N_slice, data_feed.D, data_feed.slice_size])
-        for o in out:
-            # assert o.shape[-1] == D
-            # assert o.shape[0] == N_slice
-            assert o.shape == (slice_size * 2, 3, 4)
-
-def test_coord_dim_feed(tf_session):
-    with tf_session.graph.as_default():
-        index_feed = IndexFeed(2)
-        times = tf.linspace(0., 10., 3)[:, None]
-        time_feed = TimeFeed(index_feed, times)
-        X1 = tf.linspace(0., 1., 50)[:, None]
-        X2 = tf.linspace(0., 1., 5)[:, None]
-        coord_feed = CoordinateFeed(time_feed, X1, X2)
-        dim_feed = CoordinateDimFeed(coord_feed)
-        init, next = init_feed(dim_feed)
-        tf_session.run(init)
-        assert np.all(tf_session.run(next) == (2, 50, 5))
-        assert np.all(tf_session.run(next) == (1, 50, 5))
 
 
 ###
@@ -408,33 +253,37 @@ def test_histogram(tf_session):
     with tf_session.graph.as_default():
         
         heights = tf.constant(np.arange(50)+1,dtype=float_type)
-        edgescales = tf.constant(np.arange(51)+1, dtype=float_type)
-        kern = Histogram(heights, edgescales)
+        edgescales = tf.constant(np.arange(51)/50., dtype=float_type)
+        heights = tf.exp(-0.5*edgescales**2/1.**2)[:-1]
+        kern = Histogram(heights, edgescales=edgescales)
         x = tf.constant(np.linspace(0.,10.,100)[:,None],dtype=float_type)
 
-        h,e = tf_session.run([heights, edgescales])
+        h,e = tf_session.run([kern.heights, kern.edgescales])
+
         for i in range(50):
-            plt.bar(0.5*(1./e[i+1]+1./e[i]),h[i],1./e[i+1]-1./e[i])
+            plt.bar(0.5*(e[i+1]+e[i]),h[i],e[i+1]-e[i])
         plt.savefig("test_histogram_spectrum.png")
-        plt.close('all')
+        plt.show()#close('all')
 
         K = kern.matrix(x,x)
         K,L = tf_session.run([K,safe_cholesky(K)])
         plt.imshow(K)
         plt.colorbar()
         plt.savefig("test_histogram.png")
-        plt.close("all")
+        plt.show()#close("all")
         y = np.dot(L, np.random.normal(size=(100,3)))
         plt.plot(np.linspace(0,10.,100),y)
         plt.savefig("test_histogram_sample.png")
-        plt.close("all")
+        plt.show()#close("all")
 
         x0 = tf.constant([[0.]],dtype=float_type)
         K_line = kern.matrix(x, x0)
         K_line = tf_session.run(K_line)
         plt.plot(np.linspace(0,10,100),K_line[:,0])
         plt.savefig("test_histogram_kline.png")
-        plt.close('all')
+        plt.show()#close('all')
+        # kern.plot_kernel(tf_session)
+        # plt.show()
 
 
 def test_isotropic_time_general(tf_session, lofar_array):
@@ -497,7 +346,7 @@ def test_ddtec_screen(tf_session, lofar_array):
         coord_feed = CoordinateFeed(time_feed, Xd, Xa,
                                     coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
         init, next = init_feed(coord_feed)
-        kern = DTECIsotropicTimeGeneral(variance=0.17,timescale=30.,lengthscales=15., a=300., b=90.,
+        kern = DTECIsotropicTimeGeneral(variance=0.1,timescale=30.,lengthscales=15., a=300., b=100.,
                                            fed_kernel='RBF',obs_type='DDTEC',squeeze=True,
                                            kernel_params={'resolution':5})
         K = kern.K(next)
@@ -510,7 +359,11 @@ def test_ddtec_screen(tf_session, lofar_array):
         L = np.sqrt(s)*np.linalg.cholesky(K + 1e-6*np.eye(K.shape[-1]))
         ddtecs = np.einsum("ab,b->a",L, np.random.normal(size=L.shape[0])).reshape((M,M))
         import pylab as plt
-        plt.imshow(np.sin(-8.448e6/140e6*ddtecs))
+        plt.imshow(ddtecs)
+        plt.colorbar()
+        plt.savefig("sim_ddtecs.png")
+        plt.show()
+        plt.imshow(np.sin(-8.448e6 / 140e6 * ddtecs))
         plt.colorbar()
         plt.savefig("sim_ddtecs.png")
         plt.show()
@@ -631,7 +484,6 @@ def test_K_parts(tf_session, lofar_array):
         K_np = np.concatenate([np.concatenate([K00, K01],axis=-1), np.concatenate([K10, K11],axis=-1)],axis=-2)
 
         assert np.all(K_np==K)
-        import pylab as plt
 
         K_ = tf_session.run(K_parts(kern, [X, X0], [(1, 5, 6),(1, 5, 6)]))
         # plt.imshow(K-K_)

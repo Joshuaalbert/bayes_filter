@@ -130,7 +130,7 @@ class Parameter(object):
 
         :param unconstrained_value: tf.Tensor, optional
             If not None, then gives the unconstrained parameter value.
-        :param constrained_value: tf.Tensor
+        :param constraiunconstrained_valuesned_value: tf.Tensor
             If not None, then gives the constrained parameter value
         :param bijector: tfp.bijectors.Bijector
             If None then Identity, else gives relation Y=g(X)
@@ -160,12 +160,15 @@ class Parameter(object):
         if shape is not None:
             self.constrained_value = tf.reshape(self.constrained_value, shape)
             self.unconstrained_value = tf.reshape(self.unconstrained_value, shape)
-        if distribution is None:
-            distribution = tfp.distributions.Uniform(
-                low = tf.constant(0.,dtype=float_type), high = tf.constant(1.,dtype=float_type))
-        self.unconstrained_prior = tfp.distributions.TransformedDistribution(
-            distribution=distribution, bijector=tfp.bijectors.Invert(self.bijector))
-        self.constrained_prior = distribution
+        if distribution is not None:
+            # distribution = tfp.distributions.Uniform(
+            #     low = tf.constant(0.,dtype=float_type), high = tf.constant(1.,dtype=float_type))
+            self.unconstrained_prior = tfp.distributions.TransformedDistribution(
+                distribution=distribution, bijector=tfp.bijectors.Invert(self.bijector))
+            self.constrained_prior = distribution
+        else:
+            self.unconstrained_prior = 0.
+            self.constrained_prior = 0.
 
 
 

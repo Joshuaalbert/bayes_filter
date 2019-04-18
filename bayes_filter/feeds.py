@@ -1,8 +1,11 @@
 import tensorflow as tf
 import numpy as np
 from . import float_type
-from .misc import flatten_batch_dims, make_coord_array
+from .misc import flatten_batch_dims, make_coord_array, graph_store_set
 from .datapack import DataPack
+from .settings import dist_type,angle_type
+from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references
+
 
 
 def init_feed(feed):
@@ -15,9 +18,6 @@ def init_feed(feed):
     feed = feed.feed
     iterator_tensor = feed.make_initializable_iterator()
     return iterator_tensor.initializer, iterator_tensor.get_next()
-
-
-
 
 class Feed(object):
     def __init__(self):
@@ -87,7 +87,7 @@ class DataFeed(Feed):
         return data
 
 class DatapackFeed(Feed):
-    def __init__(self, index_feed:IndexFeed, datapack, *addresses, selection = {}, time_axis=2, perm=(2,1,0), event_size=1, num_parallel_calls=10):
+    def __init__(self, index_feed:IndexFeed, datapack:DataPack, data_map, screen_solset, selection = {}, ref_ant=None, ref_dir=None, event_size=1, num_parallel_calls=10):
         """
         Create a time feed
         :param index_feed: IndexFeed
@@ -103,47 +103,115 @@ class DatapackFeed(Feed):
         """
         self.num_parallel_calls = tf.convert_to_tensor(num_parallel_calls, tf.int32)
         self.event_size = tf.convert_to_tensor(event_size, tf.int32)
+        self.index_feed = index_feed
         self.datapack = datapack
         self.selection = selection
-        self.selection.pop('time', None)
-        self.addresses = addresses# = [tf.cast(c, float_type) if c.dtype is not float_type else c for c in data]
-        self.time_axis = time_axis
-        self.perm = perm
-        self.index_feed = index_feed
-        self.slice_size = self.index_feed.step
-        # with tf.control_dependencies([tf.assert_equal(tf.shape(d), tf.shape(self.data[0])) for d in self.data]):
-        #     self.Nt = tf.shape(self.data[0])[0]
-        #     self.D = tf.shape(self.data[0])[-1]
-        #     self.N_slice = self.slice_size * tf.reduce_prod(tf.shape(self.data[0])[1:-1])
-        #     self.N = tf.reduce_prod(tf.shape(self.data[0])[:-1])
-        self.data_feed = self.index_feed.feed.map(self.get_data_block, num_parallel_calls=self.num_parallel_calls)
-        self.feed = self.data_feed
+        self.data_map = data_map
+        self.screen_solset = screen_solset
+        self._assert_homogeneous_coords()
+        self.ref_ant = ref_ant
+        self.ref_dir = ref_dir
+        self.time_feed,self.coord_feed, self.star_coord_feed = self.create_coord_and_time_feeds()
+        self.data_feed = self.index_feed.feed.map(self.get_data_block, num_parallel_calls=1)
+        self.datapack_feed = tf.data.Dataset.zip((self.data_feed.feed,
+                             self.coord_feed.feed,
+                             self.star_coord_feed.feed,
+                             self.continue_feed.feed,
+                             self.coord_dim_feed.feed,
+                             self.star_coord_dim_feed.feed))
+        self.feed = self.datapack_feed
+
+    def _get_coords(self, solset, soltab, selection = None):
+        if selection is None:
+            selection = self.selection
+        with self.datapack:
+            self.datapack.switch_solset(solset)
+            self.datapack.select(**selection)
+            axes = getattr(self.datapack,"axes_"+soltab, None)
+            if axes is None:
+                raise ValueError("{} : {} invalid data map".format(solset, soltab))
+            timestamps, times = self.datapack.get_times(axes['time'])
+            antenna_labels, antennas = self.datapack.get_antennas(axes['ant'])
+            patch_names, directions = self.datapack.get_sources(axes['dir'])
+            _, freqs = self.datapack.get_antennas(axes['freq'])
+            coords = {"Xt":(times.mjd[:,None]).astype(np.float64)*86400.,
+                      "Xa": antennas.cartesian.xyz.to(dist_type).value.T.astype(np.float64),
+                      "Xd": np.stack(
+                [directions.ra.to(angle_type).value, directions.dec.to(angle_type).value], axis=1).astype(np.float64)
+            }
+            return coords
+
+    def _assert_homogeneous_coords(self):
+        coord_consistency = None
+        for solset, soltab in self.data_map.items():
+            coords = self._get_coords(solset, soltab)
+            if coord_consistency is not None:
+                for key in coords:
+                    if not np.all(np.isclose(coords[key],coord_consistency[key])):
+                        raise ValueError(
+                            "{} coords inconsistent in {} {}".format(key,solset,soltab)
+                        )
+
+    def create_coord_and_time_feeds(self):
+        solset, soltab = self.data_map.items()[0]
+        selection = {'ant': None, 'dir': None}
+        coords = self._get_coords(solset, soltab, selection)
+        ref_ant = coords['Xa'][0, :]
+        ref_dir = np.mean(coords['Xd'], axis=0)
+        coords = self._get_coords(self.screen_solset, soltab)
+        Xt = coords['Xt']
+        Xd = coords["Xd"]
+        Xa = coords["Xa"]
+        time_feed = TimeFeed(self.index_feed, Xt.astype(np.float64), num_parallel_calls=self.num_parallel_calls)
+        coord_feed = CoordinateFeed(time_feed,
+                                     tf.convert_to_tensor(Xd, dtype=float_type),
+                                     tf.convert_to_tensor(Xa, dtype=float_type),
+                                     coord_map=tf_coord_transform(
+                                         itrs_to_enu_with_references(ref_ant, ref_dir, ref_ant)))
+        selection = self.selection.copy()
+        selection['dir'] = None
+        coords = self._get_coords(solset, soltab, selection)
+        Xd_screen = coords["Xd"]
+        Xa = coords["Xa"]
+        starcoord_feed = CoordinateFeed(time_feed,
+                                    tf.convert_to_tensor(Xd_screen, dtype=float_type),
+                                    tf.convert_to_tensor(Xa, dtype=float_type),
+                                    coord_map=tf_coord_transform(
+                                        itrs_to_enu_with_references(ref_ant, ref_dir, ref_ant)))
+
+        return time_feed, coord_feed,starcoord_feed
 
     def get_data_block(self, index, next_index):
         """
         Get the time slice from index to index + step
+
         :param index: tf.int32, Tensor, scalar
             Index to start slice at
         :return: float_type, Tensor, [N, D]
             The returned data block
         """
-        next_index = tf.minimum(next_index, self.Nt)
-        indices = tf.range(index, next_index)
-        data = [flatten_batch_dims(tf.gather(d, indices, axis=0),num_batch_dims=-self.event_size) for d in self.data]
-        return data
+        data = tf.py_function(self._get_block, [index, next_index], float_type)
+        return [flatten_batch_dims(d, num_batch_dims=-self.event_size) for d in data]
 
     def _get_block(self, index, next_index):
-        selection = {'time':slice(index,next_index)}
-        selection.update(self.selection)
-        with DataPack as datapack:
-            for (solset,soltab) in self.addresses:
-                datapack.switch_solset(solset)
-                datapack.select(**self.selection)
-                val, axes = getattr(soltab)
-
-        # X = tf.py_function(lambda *X: make_coord_array(*[x.numpy() for x in X], flat=False),
-        #                       X, float_type)
-
+        index = index.numpy()
+        next_index = next_index.numpy()
+        self.selection['time'] = slice(index,next_index,1)
+        with self.datapack:
+            G = []
+            for (solset,soltab) in self.data_map:
+                self.datapack.switch_solset(solset)
+                self.datapack.select(**self.selection)
+                val, axes = getattr(self.datapack,soltab)
+                if soltab == 'phase':
+                    G.append(np.exp(1j*val))
+                elif soltab == 'amplitude':
+                    G.append(np.abs(val))
+            G = np.prod(G,axis=0)#Npol, Nd, Na, Nf, Nt
+            G = np.transpose(G[0,...],(4,1,2,3))#Nt, Nd, Na, Nf
+            Y_real = np.real(G)
+            Y_imag = np.imag(G)
+            return Y_real, Y_imag
 
 class TimeFeed(Feed):
     def __init__(self, index_feed: IndexFeed, times, num_parallel_calls=10):

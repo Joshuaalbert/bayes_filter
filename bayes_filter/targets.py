@@ -30,6 +30,9 @@ class Target(object):
             self.parameters = [Parameter(bijector=b, distribution=d) for (b, d) in
                            zip(bijectors, distributions)]
 
+    def get_default_parameters(self):
+        raise NotImplementedError("must subclass")
+
     @property
     def bijectors(self):
         return [p.bijector for p in self.parameters]
@@ -283,71 +286,52 @@ class DTECToGainsSAEM(Target):
     DTECToGainsParams = namedtuple('DTECToGainsParams',
                                       ['y_sigma', 'variance', 'lengthscales', 'a', 'b', 'timescale'])
 
-    def __init__(self, X, Xstar, Y_real, Y_imag, freqs,
-                 y_sigma=0.2, variance=0.17, lengthscales=15.0,
-                 a=250., b=50., timescale=30.,
-                 fed_kernel = 'RBF', obs_type='DDTEC', variables=None, full_posterior=True, which_kernel = 0,
-                 kernel_params={}, L=None, Nh=None, squeeze=True):
+    def __init__(self,
+                 initial_hyperparams={},
+                 variables=None):
+        self._setup = False
 
+        self.bijectors = DTECToGainsSAEM.DTECToGainsParams(
+            y_sigma=ScaledLowerBoundedBijector(1e-2, 0.2),
+            variance=ScaledLowerBoundedBijector(1e-3, 1.),
+            lengthscales=ScaledLowerBoundedBijector(3., 15.),
+            a=ScaledLowerBoundedBijector(100., 250.),
+            b=ScaledLowerBoundedBijector(10., 100.),
+            timescale=ScaledLowerBoundedBijector(10., 50.))
+
+        if variables is None:
+            variables = self.init_variables(initial_hyperparams)
+
+        self.variables = variables
+        self.constrained_hyperparams = self.constrained_states(self.unstack_state(self.variables))
+        super(DTECToGainsSAEM, self).__init__(bijectors=self.bijectors, distributions=None, unconstrained_values=None)
+
+    def setup_target(self,X, Xstar, Y_real, Y_imag, freqs,fed_kernel = 'RBF', obs_type='DDTEC', full_posterior=True, which_kernel = 0,
+                 kernel_params={}, L=None, Nh=None, squeeze=True):
         self.obs_type = obs_type
         self.fed_kernel = fed_kernel
         self.full_posterior = full_posterior
-        # self.num_chains = num_chains
-
-        initial_values = DTECToGainsSAEM.DTECToGainsParams(
-            tf.convert_to_tensor(y_sigma, dtype=float_type), tf.convert_to_tensor(variance, dtype=float_type),
-            tf.convert_to_tensor(lengthscales, dtype=float_type), tf.convert_to_tensor(a, dtype=float_type),
-            tf.convert_to_tensor(b, dtype=float_type), tf.convert_to_tensor(timescale, dtype=float_type))
-
-        bijectors = DTECToGainsSAEM.DTECToGainsParams(
-            ScaledLowerBoundedBijector(1e-2,0.2),
-            ScaledLowerBoundedBijector(1e-3,1.),
-            ScaledLowerBoundedBijector(3., 15.),
-            ScaledLowerBoundedBijector(100.,250.),
-            ScaledLowerBoundedBijector(10.,100.),
-            ScaledLowerBoundedBijector(10.,50.))
-
-        distributions = DTECToGainsSAEM.DTECToGainsParams(
-            y_sigma = tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-2, 1., 0.5)),
-            variance = tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-3, 1e-1, 0.5)),
-            lengthscales = tfp.distributions.Normal(tf.convert_to_tensor(20.,dtype=float_type), tf.convert_to_tensor(15.,dtype=float_type)),
-            a = tfp.distributions.Normal(tf.convert_to_tensor(250.,dtype=float_type), tf.convert_to_tensor(150.,dtype=float_type)),
-            b = tfp.distributions.Normal(tf.convert_to_tensor(70.,dtype=float_type), tf.convert_to_tensor(50.,dtype=float_type)),
-            timescale = tfp.distributions.Normal(tf.convert_to_tensor(60.,dtype=float_type), tf.convert_to_tensor(50.,dtype=float_type)))
-
-        if variables is None:
-            constrained_vars = tf.stack([b.inverse(v) for (b, v) in zip(bijectors, initial_values)], axis=0)
-            variables = tf.get_variable('state_vars', initializer=constrained_vars)
-        self.variables = variables
-
-        self.variables_split = DTECToGainsSAEM.DTECToGainsParams(*[tf.reshape(self.variables[..., i:i+1], (-1, 1)) for i in range(len(bijectors))])
-
-        super(DTECToGainsSAEM, self).__init__(bijectors=bijectors, distributions=distributions, unconstrained_values=self.variables_split)
-
-        self.state = DTECToGainsSAEM.DTECToGainsParams(*self.parameters)
-
-        #N, ndims
+        # N, ndims
         self.X = X
         self.N = tf.shape(self.X)[0]
         if Xstar is not None:
-            #Ns, ndims
+            # Ns, ndims
             self.Xstar = Xstar
             self.Ns = tf.shape(self.Xstar)[0]
-            self.Xconcat = tf.concat([self.X, self.Xstar],axis=0)
+            self.Xconcat = tf.concat([self.X, self.Xstar], axis=0)
         else:
             self.Xstar = None
             self.Ns = 0
             self.Xconcat = self.X
         self.Nh = tf.shape(self.Xconcat)[0]
-        #N, Nf
+        # N, Nf
         self.Y_real = Y_real
-        #N, Nf
+        # N, Nf
         self.Y_imag = Y_imag
-        #Nf
+        # Nf
         self.freqs = freqs
 
         if which_kernel == 0:
-            resolution = kernel_params.pop('resolution', 3)
             kern = DTECIsotropicTimeGeneral(
                 variance=self.state.variance,
                 lengthscales=self.state.lengthscales,
@@ -357,7 +341,7 @@ class DTECToGainsSAEM(Target):
                 fed_kernel=self.fed_kernel,
                 obs_type=self.obs_type,
                 squeeze=squeeze,
-                kernel_params = kernel_params)
+                kernel_params=kernel_params)
         if which_kernel == 1:
             kern = DTECIsotropicTimeGeneralODE(
                 variance=self.state.variance,
@@ -369,7 +353,7 @@ class DTECToGainsSAEM(Target):
                 obs_type=self.obs_type,
                 squeeze=squeeze,
                 ode_type='fixed',
-                kernel_params = kernel_params)
+                kernel_params=kernel_params)
         if which_kernel == 2:
             kern = DTECIsotropicTimeGeneralODE(
                 variance=self.state.variance,
@@ -381,10 +365,9 @@ class DTECToGainsSAEM(Target):
                 obs_type=self.obs_type,
                 squeeze=squeeze,
                 ode_type='adaptive',
-                kernel_params = kernel_params)
+                kernel_params=kernel_params)
 
         # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
-
 
         # (batch), N+Ns, N+Ns
         K = kern.K(self.Xconcat)
@@ -393,10 +376,9 @@ class DTECToGainsSAEM(Target):
         # with tf.control_dependencies([tf.print("asserting initial K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
         # N+Ns, N+Ns
 
-
         L_new = safe_cholesky(K)
         if squeeze:
-            L_new.set_shape(tf.TensorShape([Nh,Nh]))
+            L_new.set_shape(tf.TensorShape([Nh, Nh]))
         else:
             L_new.set_shape(tf.TensorShape([None, Nh, Nh]))
         if L is None:
@@ -404,18 +386,53 @@ class DTECToGainsSAEM(Target):
         else:
             self.L = tf.cond(tf.equal(tf.shape(L)[-1], self.Nh), lambda: L, lambda: L_new)
 
-    def unconstrained_states(self, variables=None):
-        if variables is None:
-            variables = self.variables
-        # with tf.control_dependencies([tf.print("unconstrained_states -> ",*[(tf.shape(s),s) for s in unconstrained_states])]):
-        return DTECToGainsSAEM.DTECToGainsParams(*[self.parameters[i].bijector.inverse(tf.reshape(variables[i:i+1], (-1, 1))) for i in range(len(self.parameters))])
+        self._setup = True
+
+    @property
+    def setup(self):
+        return self._setup
+
+    @staticmethod
+    def get_default_parameters():
+        return DTECToGainsSAEM.DTECToGainsParams(y_sigma=0.1,variance=0.1, lengthscales=15., a=250., b=100., timescale=100.)
+
+    def init_variables(self, initial_hyperparams={}):
+        initial_hyperparams = self.get_default_parameters()._replace(**initial_hyperparams)
+        initial_hyperparams = initial_hyperparams._replace(
+            *[tf.convert_to_tensor(v, dtype=float_type) for v in initial_hyperparams])
+
+        bijectors = self.get_bijectors()
+
+        unconstrained_vars = DTECToGainsSAEM.DTECToGainsParams(
+            *[tf.reshape(b.inverse(v), (-1,1)) for (b, v) in zip(bijectors, initial_hyperparams)])
+        variables = tf.get_variable('state_vars', initializer=DTECToGainsSAEM.stack_state(unconstrained_vars))
+
+        return variables
+
+    def unstack_state(self,state):
+        return DTECToGainsSAEM.DTECToGainsParams(
+            *[tf.reshape(state[..., i:i + 1], (-1, 1)) for i in
+              range(len(self.parameters))])
+
+    def stack_state(state):
+        return tf.stack(state, axis=0)
+
+    def unconstrained_state(self, state):
+        """
+        Gets the unconstrained state from tuple of constrained states
+        :param state:
+        :return:
+        """
+        return DTECToGainsSAEM.DTECToGainsParams(*[self.parameters[i].bijector.inverse(state[i]) for i in range(len(self.parameters))])
 
 
-    def constrained_states(self, variables=None):
-        if variables is None:
-            variables = self.variables
-        # with tf.control_dependencies([tf.print("unconstrained_states -> ",*[(tf.shape(s),s) for s in unconstrained_states])]):
-        return DTECToGainsSAEM.DTECToGainsParams(*[self.parameters[i].bijector.forward(tf.reshape(variables[i:i+1], (-1, 1))) for i in range(len(self.parameters))])
+    def constrained_state(self, state):
+        """
+        Gets the constrained state from typle of unconstrained states
+        :param state:
+        :return:
+        """
+        return DTECToGainsSAEM.DTECToGainsParams(*[self.parameters[i].bijector.forward(state[i]) for i in range(len(self.parameters))])
 
     def transform_samples(self, dtec):
         """
@@ -525,6 +542,8 @@ class DTECToGainsSAEM(Target):
         :return: float_type, tf.Tensor, [num_chains]
             The log-probability of the data given model.
         """
+        if not self.setup:
+            raise ValueError("setup is not complete, must run setup_target")
 
         # transform
         # num_chains, N+Ns

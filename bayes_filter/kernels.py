@@ -17,7 +17,7 @@ def _validate_arg_if_not_none(arg, assertion, validate_args):
   return result
 
 class Histogram(tfp.positive_semidefinite_kernels.PositiveSemidefiniteKernel):
-    def __init__(self,heights,edgescales, feature_ndims=1, validate_args=False,name='Histogram'):
+    def __init__(self,heights,edgescales=None, lengthscales=None,feature_ndims=1, validate_args=False,name='Histogram'):
         """Construct an Histogram kernel instance.
 
         Args:
@@ -26,6 +26,10 @@ class Histogram(tfp.positive_semidefinite_kernels.PositiveSemidefiniteKernel):
             `apply` and `matrix` methods.
         edgescales: floating point `Tensor` that controls how wide the
             spectrum bins are. These are lengthscales, and edges are actually 1/``edgescales``.
+            Must be broadcastable with
+            `heights` and inputs to `apply` and `matrix` methods.
+        lengthscales: floating point `Tensor` that controls how wide the
+            spectrum bins are. The edges are actually 1/``lengthscales``.
             Must be broadcastable with
             `heights` and inputs to `apply` and `matrix` methods.
         feature_ndims: Python `int` number of rightmost dims to include in the
@@ -40,15 +44,45 @@ class Histogram(tfp.positive_semidefinite_kernels.PositiveSemidefiniteKernel):
                 heights = tf.convert_to_tensor(
                     heights, name='heights', dtype=dtype)
             self._heights = _validate_arg_if_not_none(
-              heights, tf.assert_positive, validate_args)
+                heights, tf.assert_positive, validate_args)
+            if lengthscales is not None:
+                lengthscales = tf.convert_to_tensor(
+                    lengthscales, dtype=dtype,name='lengthscales')
+                lengthscales = tf.nn.top_k(lengthscales, k = tf.shape(lengthscales)[-1], sorted=True)[0]
+                edgescales = tf.reciprocal(lengthscales)
+
             if edgescales is not None:
                 edgescales = tf.convert_to_tensor(
-                    edgescales, name='edgescales', dtype=dtype)
+                    edgescales, dtype=dtype, name='edgescales')
+                edgescales = tf.reverse(tf.nn.top_k(edgescales,k=tf.shape(edgescales)[-1],sorted=True)[0], axis=[-1])
+                lengthscales = tf.reciprocal(edgescales)
+
             self._edgescales = _validate_arg_if_not_none(
-              edgescales, tf.assert_positive, validate_args)
-            tf.assert_same_float_dtype([self._heights, self._edgescales])
+                edgescales, tf.assert_positive, validate_args)
+            self._lengthscales = _validate_arg_if_not_none(
+                lengthscales, tf.assert_positive, validate_args)
+            tf.assert_same_float_dtype([self._heights, self._edgescales, self._lengthscales])
         super(Histogram, self).__init__(
             feature_ndims, dtype=dtype, name=name)
+
+    # def plot_spectrum(self,sess,ax=None):
+    #     h,e = sess.run([self.heights, self.edgescales])
+    #     n = h.shape[-1]
+    #     if ax is None:
+    #         fig, ax = plt.subplots(1,1)
+    #     for i in range(n):
+    #         ax.bar(0.5*(e[i+1]+e[i]),h[i],e[i+1]-e[i])
+    #
+    # def plot_kernel(self,sess,ax=None):
+    #     x0 = tf.constant([[0.]], dtype=self.lengthscales.dtype)
+    #     x = tf.cast(tf.linspace(x0[0,0],tf.reduce_max(self.lengthscales)*2.,100)[:,None],self.lengthscales.dtype)
+    #     K_line = self.matrix(x, x0)
+    #     K_line,x = sess.run([K_line,x])
+    #     if ax is None:
+    #         fig, ax = plt.subplots(1,1)
+    #     ax.plot(x[:,0], K_line[:, 0])
+
+
 
     @property
     def heights(self):
@@ -59,6 +93,11 @@ class Histogram(tfp.positive_semidefinite_kernels.PositiveSemidefiniteKernel):
     def edgescales(self):
         """Edgescales parameter."""
         return self._edgescales
+
+    @property
+    def lengthscales(self):
+        """Edgescales parameter."""
+        return self._lengthscales
 
     def _batch_shape(self):
         scalar_shape = tf.TensorShape([])
@@ -85,19 +124,19 @@ class Histogram(tfp.positive_semidefinite_kernels.PositiveSemidefiniteKernel):
         #B(1), H+1, 1, 1
         edgescales = util.pad_shape_right_with_ones(
             self.edgescales, ndims=param_expansion_ndims)
-        norm /= edgescales
+        norm *= edgescales
         norm *= 2*np.pi
 
         zeros = tf.zeros(tf.shape(self.heights)[:-1],dtype=self.heights.dtype)[...,None]
         # B(1),1+H+1
         heights = tf.concat([zeros, self.heights, zeros],axis=-1)
         # B(1), H+1
-        dheights = heights[..., 1:] - heights[..., :-1]
+        dheights = heights[..., :-1] - heights[..., 1:]
         #B(1), H+1, 1, 1
         dheights = util.pad_shape_right_with_ones(
             dheights, ndims=param_expansion_ndims)
         #B(1), H+1, 1, 1
-        dheights /= edgescales
+        dheights *= edgescales
         def _sinc(x):
             return tf.sin(x)*tf.reciprocal(x)
         #B(1), H+1, N, Np

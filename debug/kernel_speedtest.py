@@ -6,7 +6,7 @@ from bayes_filter.misc import load_array_file, get_screen_directions
 from bayes_filter import float_type
 from bayes_filter.datapack import DataPack
 import sys
-from bayes_filter.data_feed import IndexFeed,TimeFeed,CoordinateFeed, DataFeed, init_feed, ContinueFeed
+from bayes_filter.feeds import IndexFeed,TimeFeed,CoordinateFeed, DataFeed, init_feed, ContinueFeed
 from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references
 from bayes_filter.kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
 import astropy.time as at

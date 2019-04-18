@@ -14,9 +14,42 @@ from . import logging
 import os
 from .datapack import DataPack
 import networkx as nx
+from . import logging
+from collections import namedtuple
+
+def dict2namedtuple(d, name="Result"):
+    res = namedtuple(name, list(d.keys()))
+    return res(**d)
 
 
+def graph_store_set(key, value, graph = None, name="graph_store"):
+    if isinstance(key,(list,tuple)):
+        if len(key) != len(value):
+            raise IndexError("keys and values must be equal {} {}".format(len(key), len(value)))
+        for k,v in zip(key,value):
+            graph_store_set(k,v,graph=graph, name=name)
+    values_key = "{}_values".format(name)
+    keys_key = "{}_keys".format(name)
+    if graph is None:
+        graph = tf.get_default_graph()
+    with graph.as_default():
+        graph.add_to_collection(keys_key, key)
+        graph.add_to_collection(values_key, value)
 
+def graph_store_get(key, graph = None, name="graph_store"):
+    if isinstance(key, (list,tuple)):
+        return [graph_store_get(k) for k in key]
+    values_key = "{}_values".format(name)
+    keys_key = "{}_keys".format(name)
+    if graph is None:
+        graph = tf.get_default_graph()
+    with graph.as_default():
+        keys = graph.get_collection(keys_key)
+        values = graph.get_collection(values_key)
+        if key not in keys:
+            raise KeyError("{} not in the collection".format(key))
+        index = keys_key.index(key)
+        return values[index]
 
 def plot_graph(tf_graph,ax=None, filter=False):
     '''Plot a DAG using NetworkX'''
