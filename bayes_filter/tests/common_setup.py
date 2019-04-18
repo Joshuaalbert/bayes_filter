@@ -1,6 +1,7 @@
 import os
 import sys
 
+from .. import logging
 import numpy as np
 import pytest
 import tensorflow as tf
@@ -10,6 +11,14 @@ from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_6D
 from bayes_filter.feeds import IndexFeed, TimeFeed, CoordinateFeed, DataFeed
 
 from bayes_filter.misc import load_array_file
+
+TEST_FOLDER = os.path.abspath('./test_output')
+os.makedirs(TEST_FOLDER,exist_ok=True)
+
+def clean_test_output():
+    logging.debug("Removing {}".format(TEST_FOLDER))
+    os.unlink(TEST_FOLDER)
+
 
 
 @pytest.fixture

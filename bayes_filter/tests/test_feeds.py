@@ -2,6 +2,7 @@ from .common_setup import *
 from bayes_filter.datapack import DataPack
 from bayes_filter.feeds import IndexFeed, init_feed, TimeFeed, ContinueFeed, CoordinateFeed, DataFeed, \
     CoordinateDimFeed, DatapackFeed
+from ..misc import make_example_datapack
 
 
 def test_index_feed(tf_session):
@@ -107,11 +108,11 @@ def test_coord_dim_feed(tf_session):
 
 def test_datapack_feed(tf_session):
     with tf_session.graph.as_default():
+        datapack = make_example_datapack(10, 2, 10, pols=['XX'],clobber=True, name='feed_test.h5', )
         index_feed = IndexFeed(1)
-        datapack = DataPack('/home/albert/git/bayes_tec/scripts/data/P126+65_compact_full_raw.h5')
         datapack_feed = DatapackFeed(index_feed, datapack, {'sol000':'phase'},
-                     "screen_posterior_dr2_saem",
+                     "sol000",
                      selection={'ant':"RS*",'dir':None})
         init, next = init_feed(datapack_feed)
         tf_session.run(init)
-        print(tf_session.run(next))
+        print(tf_session.run(next)[2][:,0])
