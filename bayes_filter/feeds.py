@@ -111,14 +111,12 @@ class DatapackFeed(Feed):
         self._assert_homogeneous_coords()
         self.ref_ant = ref_ant
         self.ref_dir = ref_dir
-        self.time_feed,self.coord_feed, self.star_coord_feed = self.create_coord_and_time_feeds()
+        self.freq_feed, self.time_feed,self.coord_feed, self.star_coord_feed = self.create_coord_and_time_feeds()
         self.data_feed = self.index_feed.feed.map(self.get_data_block, num_parallel_calls=1)
-        self.datapack_feed = tf.data.Dataset.zip((self.data_feed.feed,
+        self.datapack_feed = tf.data.Dataset.zip((self.data_feed,
+                            self.freq_feed.feed,
                              self.coord_feed.feed,
-                             self.star_coord_feed.feed,
-                             self.continue_feed.feed,
-                             self.coord_dim_feed.feed,
-                             self.star_coord_dim_feed.feed))
+                             self.star_coord_feed.feed))
         self.feed = self.datapack_feed
 
     def _get_coords(self, solset, soltab, selection = None):
@@ -133,8 +131,9 @@ class DatapackFeed(Feed):
             timestamps, times = self.datapack.get_times(axes['time'])
             antenna_labels, antennas = self.datapack.get_antennas(axes['ant'])
             patch_names, directions = self.datapack.get_sources(axes['dir'])
-            _, freqs = self.datapack.get_antennas(axes['freq'])
-            coords = {"Xt":(times.mjd[:,None]).astype(np.float64)*86400.,
+            _, freqs = self.datapack.get_freqs(axes['freq'])
+            coords = {"Xf": freqs,
+                      "Xt":(times.mjd[:,None]).astype(np.float64)*86400.,
                       "Xa": antennas.cartesian.xyz.to(dist_type).value.T.astype(np.float64),
                       "Xd": np.stack(
                 [directions.ra.to(angle_type).value, directions.dec.to(angle_type).value], axis=1).astype(np.float64)
@@ -153,7 +152,7 @@ class DatapackFeed(Feed):
                         )
 
     def create_coord_and_time_feeds(self):
-        solset, soltab = self.data_map.items()[0]
+        solset, soltab = list(self.data_map.items())[0]
         selection = {'ant': None, 'dir': None}
         coords = self._get_coords(solset, soltab, selection)
         ref_ant = coords['Xa'][0, :]
@@ -162,6 +161,7 @@ class DatapackFeed(Feed):
         Xt = coords['Xt']
         Xd = coords["Xd"]
         Xa = coords["Xa"]
+        freq_feed = FreqFeed(coords['Xf'])
         time_feed = TimeFeed(self.index_feed, Xt.astype(np.float64), num_parallel_calls=self.num_parallel_calls)
         coord_feed = CoordinateFeed(time_feed,
                                      tf.convert_to_tensor(Xd, dtype=float_type),
@@ -179,7 +179,7 @@ class DatapackFeed(Feed):
                                     coord_map=tf_coord_transform(
                                         itrs_to_enu_with_references(ref_ant, ref_dir, ref_ant)))
 
-        return time_feed, coord_feed,starcoord_feed
+        return freq_feed, time_feed, coord_feed,starcoord_feed
 
     def get_data_block(self, index, next_index):
         """
@@ -190,7 +190,8 @@ class DatapackFeed(Feed):
         :return: float_type, Tensor, [N, D]
             The returned data block
         """
-        data = tf.py_function(self._get_block, [index, next_index], float_type)
+        data = tf.py_function(self._get_block, [index, next_index], [float_type]*2)
+        print(data)
         return [flatten_batch_dims(d, num_batch_dims=-self.event_size) for d in data]
 
     def _get_block(self, index, next_index):
@@ -199,7 +200,7 @@ class DatapackFeed(Feed):
         self.selection['time'] = slice(index,next_index,1)
         with self.datapack:
             G = []
-            for (solset,soltab) in self.data_map:
+            for (solset,soltab) in self.data_map.items():
                 self.datapack.switch_solset(solset)
                 self.datapack.select(**self.selection)
                 val, axes = getattr(self.datapack,soltab)
@@ -208,7 +209,7 @@ class DatapackFeed(Feed):
                 elif soltab == 'amplitude':
                     G.append(np.abs(val))
             G = np.prod(G,axis=0)#Npol, Nd, Na, Nf, Nt
-            G = np.transpose(G[0,...],(4,1,2,3))#Nt, Nd, Na, Nf
+            G = np.transpose(G[0,...],(3,0,1,2))#Nt, Nd, Na, Nf
             Y_real = np.real(G)
             Y_imag = np.imag(G)
             return Y_real, Y_imag
@@ -244,6 +245,25 @@ class TimeFeed(Feed):
         next_index = tf.minimum(next_index, self.Nt)
         indices = tf.range(index, next_index)
         return tf.gather(self.times, indices, axis=0)
+
+class FreqFeed(Feed):
+    def __init__(self, freqs, num_parallel_calls=10):
+        """
+        Create a time feed
+        :param index_feed: IndexFeed
+            Pulse of this feed
+        :param times: float_type, Tensor, [Nt, 1]
+            Times to slice
+        :param num_parallel_calls:
+        """
+        self.num_parallel_calls = tf.convert_to_tensor(num_parallel_calls, tf.int32)
+        self.freqs = tf.convert_to_tensor(freqs, dtype=float_type)
+        self.freq_feed = tf.data.Dataset.from_tensors(self.freqs).repeat()#tf.data.Dataset.from_generator(self._get_freqs, float_type)
+        self.feed = self.freq_feed
+
+    def _get_freqs(self):
+        while True:
+            yield self.freqs
 
 class ContinueFeed(Feed):
     def __init__(self, time_feed: TimeFeed, num_parallel_calls = 10):
