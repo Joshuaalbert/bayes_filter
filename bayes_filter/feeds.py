@@ -123,14 +123,14 @@ class DatapackFeed(Feed):
         if selection is None:
             selection = self.selection
         with self.datapack:
-            self.datapack.switch_solset(solset)
+            self.datapack.current_solset = solset
             self.datapack.select(**selection)
             axes = getattr(self.datapack,"axes_"+soltab, None)
             if axes is None:
                 raise ValueError("{} : {} invalid data map".format(solset, soltab))
             timestamps, times = self.datapack.get_times(axes['time'])
             antenna_labels, antennas = self.datapack.get_antennas(axes['ant'])
-            patch_names, directions = self.datapack.get_sources(axes['dir'])
+            patch_names, directions = self.datapack.get_directions(axes['dir'])
             _, freqs = self.datapack.get_freqs(axes['freq'])
             coords = {"Xf": freqs,
                       "Xt":(times.mjd[:,None]).astype(np.float64)*86400.,
@@ -191,7 +191,6 @@ class DatapackFeed(Feed):
             The returned data block
         """
         data = tf.py_function(self._get_block, [index, next_index], [float_type]*2)
-        print(data)
         return [flatten_batch_dims(d, num_batch_dims=-self.event_size) for d in data]
 
     def _get_block(self, index, next_index):
@@ -201,7 +200,7 @@ class DatapackFeed(Feed):
         with self.datapack:
             G = []
             for (solset,soltab) in self.data_map.items():
-                self.datapack.switch_solset(solset)
+                self.datapack.current_solset = solset
                 self.datapack.select(**self.selection)
                 val, axes = getattr(self.datapack,soltab)
                 if soltab == 'phase':
