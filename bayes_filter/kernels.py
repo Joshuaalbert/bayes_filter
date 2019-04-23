@@ -3,7 +3,7 @@ import numpy as np
 import tensorflow_probability as tfp
 from .settings import float_type
 from .parameters import Parameter, ScaledPositiveBijector, SphericalToCartesianBijector
-from .dblquad import dblquad
+from .quadrature import dblquad
 
 from tensorflow_probability.python.internal import dtype_util
 from tensorflow_probability.python.positive_semidefinite_kernels.internal import util
@@ -19,6 +19,7 @@ def _validate_arg_if_not_none(arg, assertion, validate_args):
 class Histogram(tfp.positive_semidefinite_kernels.PositiveSemidefiniteKernel):
     def __init__(self,heights,edgescales=None, lengthscales=None,feature_ndims=1, validate_args=False,name='Histogram'):
         """Construct an Histogram kernel instance.
+        Gives the histogram kernel on the isotropic distance from a point.
 
         Args:
         heights: floating point `Tensor` heights of spectum histogram.
