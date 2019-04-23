@@ -16,6 +16,8 @@ from .datapack import DataPack
 import networkx as nx
 from . import logging
 from collections import namedtuple
+from .coord_transforms import itrs_to_enu_with_references,tf_coord_transform
+from .kernels import DTECIsotropicTimeGeneral
 
 def dict2namedtuple(d, name="Result"):
     res = namedtuple(name, list(d.keys()))
@@ -76,8 +78,7 @@ def plot_graph(tf_graph,ax=None, filter=False):
     nx.relabel_nodes(G, mapping, copy=False)
     nx.draw(G, cmap = plt.get_cmap('jet'), with_labels = True, ax=ax)
 
-def make_example_datapack(Nd, Nf, Nt, pols=None, time_corr=50., dir_corr=0.5 * np.pi / 180., tec_scale=0.02,
-                          tec_noise=1e-3, name='test.hdf5', clobber=False):
+def make_example_datapack(Nd, Nf, Nt, pols=None, gain_noise=0.05, name='test.hdf5', obs_type='DDTEC',clobber=False):
     """
 
     :param Nd:
@@ -90,8 +91,12 @@ def make_example_datapack(Nd, Nf, Nt, pols=None, time_corr=50., dir_corr=0.5 * n
     :param tec_noise:
     :param name:
     :param clobber:
-    :return:
+    :return: DataPack
+        New object referencing a file
     """
+    from bayes_filter.feeds import TimeFeed, IndexFeed, CoordinateFeed, init_feed
+
+
     logging.info("=== Creating example datapack ===")
     name = os.path.abspath(name)
     if os.path.isfile(name) and clobber:
@@ -99,14 +104,23 @@ def make_example_datapack(Nd, Nf, Nt, pols=None, time_corr=50., dir_corr=0.5 * n
 
     datapack = DataPack(name, readonly=False)
     with datapack:
-        datapack.switch_solset('sol000')
-        datapack.add_antennas()
-        datapack.add_sources(np.random.normal(np.pi / 4., np.pi / 180. * 2.5, size=[Nd, 2]))
-        _, directions = datapack.sources
-        _, antennas = datapack.antennas
+        datapack.add_solset('sol000')
+        time0 = at.Time("2019-01-01T00:00:00.000", format='isot')
+        altaz = ac.AltAz(location=datapack.array_center.earth_location, obstime=time0)
+        up = ac.SkyCoord(alt=90.*au.deg,az=0.*au.deg,frame=altaz).transform_to('icrs')
+        directions = np.stack([np.random.normal(up.ra.rad, np.pi / 180. * 2.5, size=[Nd]),
+                               np.random.normal(up.dec.rad, np.pi / 180. * 2.5, size=[Nd])],axis=1)
+        datapack.set_directions(None,directions)
+        patch_names, directions = datapack.directions
+        antenna_labels, antennas = datapack.antennas
+        antennas /= 1000.
+        # print(directions)
+        Na = antennas.shape[0]
+
+
         ref_dist = np.linalg.norm(antennas - antennas[0:1, :], axis=1)[None, None, :, None]  # 1,1,Na,1
 
-        times = at.Time(np.linspace(0, Nt * 8, Nt)[:, None], format='gps').mjd * 86400.  # mjs
+        times = at.Time(time0.gps+np.linspace(0, Nt * 8, Nt), format='gps').mjd[:, None] * 86400.  # mjs
         freqs = np.linspace(120, 160, Nf) * 1e6
         if pols is not None:
             use_pols = True
@@ -114,29 +128,56 @@ def make_example_datapack(Nd, Nf, Nt, pols=None, time_corr=50., dir_corr=0.5 * n
         else:
             use_pols = False
             pols = ['XX']
+        Npol = len(pols)
+        tec_conversion = -8.440e6 / freqs  # Nf
+        phase = []
+        with tf.Session(graph=tf.Graph()) as sess:
+            index_feed = IndexFeed(1)
+            time_feed = TimeFeed(index_feed, times)
+            coord_feed = CoordinateFeed(time_feed, directions, antennas, coord_map=tf_coord_transform(
+                itrs_to_enu_with_references(antennas[0, :], [up.ra.rad, up.dec.rad], antennas[0, :])))
+            init, next = init_feed(coord_feed)
+            kern = DTECIsotropicTimeGeneral(0.17,obs_type=obs_type,b=100.,lengthscales=15.,kernel_params={'resolution':5})
+            K = kern.K(next)
+            Z = tf.random_normal(shape=tf.shape(K)[0:1],dtype=K.dtype)
+            ddtec = tf.matmul(safe_cholesky(K),Z[:,None])[:,0]
+            sess.run(init)
+            for t in times:
 
-        tec_conversion = -8.440e9 / freqs  # Nf
+                # plt.imshow(sess.run(K))
+                # plt.show()
+                phase.append(sess.run(ddtec)[:,None]*tec_conversion)
+        phase = np.concatenate(phase,axis=0)
+        phase = np.reshape(phase,(Nt, Nd, Na, Nf))
+        phase = np.transpose(phase, (1,2,3,0))#Nd, Na, Nf, Nt
+        phase = np.tile(phase[None,...], (Npol,1,1,1,1))#Npol, Nd, Na, Nf, Nt
 
-        X = make_coord_array(directions / dir_corr, times / time_corr)  # Nd*Nt, 3
-        X2 = np.sum((X[:, :, None] - X.T[None, :, :]) ** 2, axis=1)  # N,N
-        K = tec_scale ** 2 * np.exp(-0.5 * X2)
-        L = np.linalg.cholesky(K + 1e-6 * np.eye(K.shape[0]))  # N,N
-        Z = np.random.normal(size=(K.shape[0], len(pols)))  # N,npols
-        tec = np.einsum("ab,bc->ac", L, Z)  # N,npols
-        tec = tec.reshape((Nd, Nt, len(pols))).transpose((2, 0, 1))  # Npols,Nd,Nt
-        tec = tec[:, :, None, :] * (0.2 + ref_dist / np.max(ref_dist))  # Npols,Nd,Na,Nt
-        #         print(tec)
-        tec += tec_noise * np.random.normal(size=tec.shape)
-        phase = tec[:, :, :, None, :] * tec_conversion[None, None, None, :, None]  ##Npols,Nd,Na,Nf,Nt
-        #         print(phase)
-        phase = np.angle(np.exp(1j * phase))
+        phase = np.angle(np.exp(1j*phase) + gain_noise * np.random.normal(size=phase.shape))
 
-        if not use_pols:
-            phase = phase[0, ...]
-            pols = None
-        datapack.add_freq_dep_tab('phase', times=times[:, 0], freqs=freqs, pols=pols, vals=phase)
+
+
+
+        # X = make_coord_array(directions / dir_corr, times / time_corr)  # Nd*Nt, 3
+        # X2 = np.sum((X[:, :, None] - X.T[None, :, :]) ** 2, axis=1)  # N,N
+        # K = tec_scale ** 2 * np.exp(-0.5 * X2)
+        # L = np.linalg.cholesky(K + 1e-6 * np.eye(K.shape[0]))  # N,N
+        # Z = np.random.normal(size=(K.shape[0], len(pols)))  # N,npols
+        # tec = np.einsum("ab,bc->ac", L, Z)  # N,npols
+        # tec = tec.reshape((Nd, Nt, len(pols))).transpose((2, 0, 1))  # Npols,Nd,Nt
+        # tec = tec[:, :, None, :] * (0.2 + ref_dist / np.max(ref_dist))  # Npols,Nd,Na,Nt
+        # #         print(tec)
+        # tec += tec_noise * np.random.normal(size=tec.shape)
+        # phase = tec[:, :, :, None, :] * tec_conversion[None, None, None, :, None]  ##Npols,Nd,Na,Nf,Nt
+        # #         print(phase)
+        # phase = np.angle(np.exp(1j * phase))
+        #
+        # if not use_pols:
+        #     phase = phase[0, ...]
+        #     pols = None
+        datapack.add_soltab('phase000', values=phase, ant=antenna_labels, dir = patch_names, time=times[:, 0], freq=freqs, pol=pols)
         datapack.phase = phase
         return datapack
+
 
 def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/image.pybdsm.srl.fits', max_N = None):
     """Given a srl file containing the sources extracted from the apparent flux image of the field,
@@ -253,56 +294,18 @@ def random_sample(t, n=None):
         idx = tf.random_shuffle(tf.range(n))
         return tf.gather(t, idx, axis=0)
 
-
-def K_parts(kern, X_list, X_dims_list):
-    L = len(X_list)
-    if len(X_dims_list) != L:
-        raise ValueError("X_list and X_dims_list size must be same, and are {} and {}".format(L, len(X_dims_list)))
-
-    # def _rm_antenna(X,dims):
-    #     #Nt, Nd, Na, ndims
-    #     X = tf.reshape(X,tf.concat([dims, tf.shape(X)[-1:]],axis=0))
-    #     return flatten_batch_dims(X[:,:,1:,:],3)
-    #
-    # def _rm_direction(X,dims):
-    #     #Nt, Nd, Na, ndims
-    #     X = tf.reshape(X,tf.concat([dims, tf.shape(X)[-1:]],axis=0))
-    #     return flatten_batch_dims(X[:,1:,:,:],3)
-    #
-    #
-    # if kern.obs_type in ['DTEC','DDTEC']:
-    #     for i in range(1,L):
-    #         X_list[i] = _rm_antenna(X_list[i])
-    #         X_dims_list[i][2] -= 1
-    # if kern.obs_type in ['DDTEC']:
-    #     for i in range(1,L):
-    #         X_list[i] = _rm_direction(X_list[i])
-    #         X_dims_list[i][1] -= 1
-
-    if L == 1:
-        # raise ValueError("X_list should have more than 1 element.")
-        return kern.K(X_list[0], X_dims_list[0], X_list[0], X_dims_list[0])
-    if L == 2:
-        X = tf.concat(X_list, axis=0)
-
-        K00 = kern.K(X_list[0], X_dims_list[0], X_list[0], X_dims_list[0])
-        K01 = kern.K(X_list[0], X_dims_list[0], X_list[1], X_dims_list[1])
-        K11 = kern.K(X_list[1], X_dims_list[1], X_list[1], X_dims_list[1])
-        return tf.concat([tf.concat([K00, K01],axis=-1),
-                          tf.concat([tf.transpose(K01, (1,0) if kern.squeeze else (0,2,1)), K11], axis=-1)],
-                         axis=-2)
-
-
+def K_parts(kern, *X):
+    L = len(X)
     K = [[None for _ in range(L)] for _ in range(L)]
     for i in range(L):
         for j in range(i,L):
-            K_part = kern.K(X_list[i], X_dims_list[i], X_list[j], X_dims_list[j])
+            K_part = kern.matrix(X[i], X[j])
             K[i][j] = K_part
             if i == j:
                 continue
             K[j][i] = tf.transpose(K_part,(1,0) if kern.squeeze else (0,2,1))
-        K[i] = tf.concat(K[i],axis=1 if kern.squeeze else 2)
-    K = tf.concat(K, axis=0 if kern.squeeze else 1)
+        K[i] = tf.concat(K[i],axis=-1)
+    K = tf.concat(K, axis=-2)
     return K
 
 def log_normal_solve_fwhm(a,b,D=0.5):
