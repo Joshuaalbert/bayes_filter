@@ -1,9 +1,16 @@
 from .common_setup import *
 from bayes_filter.datapack import DataPack
 from bayes_filter.feeds import IndexFeed, init_feed, TimeFeed, ContinueFeed, CoordinateFeed, DataFeed, \
-    CoordinateDimFeed, DatapackFeed
+    CoordinateDimFeed, DatapackFeed, FreqFeed
 from ..misc import make_example_datapack
 
+def test_freq_feed(tf_session):
+    with tf_session.graph.as_default():
+        freq_feed = FreqFeed([1.,2.])
+        init, next = init_feed(freq_feed)
+        tf_session.run(init)
+        out = tf_session.run(next)
+        assert np.all(out == np.array([1.,2.]))
 
 def test_index_feed(tf_session):
     with tf_session.graph.as_default():
@@ -108,7 +115,7 @@ def test_coord_dim_feed(tf_session):
 
 def test_datapack_feed(tf_session):
     with tf_session.graph.as_default():
-        datapack = make_example_datapack(10, 2, 10, pols=['XX'],clobber=True, name='feed_test.h5', )
+        datapack = make_example_datapack(10, 2, 10, pols=['XX'],clobber=True, name=os.path.join(TEST_FOLDER,'test_feed_data.h5'))
         index_feed = IndexFeed(1)
         datapack_feed = DatapackFeed(index_feed, datapack, {'sol000':'phase'},
                      "sol000",
