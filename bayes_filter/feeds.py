@@ -87,7 +87,8 @@ class DataFeed(Feed):
         return data
 
 class DatapackFeed(Feed):
-    def __init__(self, index_feed:IndexFeed, datapack:DataPack, data_map, screen_solset, selection = {}, ref_ant=None, ref_dir=None, event_size=1, num_parallel_calls=10):
+    def __init__(self, index_feed:IndexFeed, datapack:DataPack, data_map={'sol000':'phase'}, postieror_name='posterior',
+                 selection = {}, ref_ant=None, ref_dir=None, event_size=1, num_parallel_calls=10):
         """
         Create a time feed
         :param index_feed: IndexFeed
@@ -107,16 +108,30 @@ class DatapackFeed(Feed):
         self.datapack = datapack
         self.selection = selection
         self.data_map = data_map
-        self.screen_solset = screen_solset
+        self.screen_solset = "screen_{}".format(postieror_name)
+        self.posterior_solset = "data_{}".format(postieror_name)
+        with self.datapack:
+            if self.screen_solset not in self.datapack.solsets:
+                raise ValueError("Screen solset {} does not exist.".format(self.screen_solset))
+            if self.posterior_solset not in self.datapack.solsets:
+                raise ValueError("Posterior solset {} does not exist.".format(self.posterior_solset))
         self._assert_homogeneous_coords()
         self.ref_ant = ref_ant
         self.ref_dir = ref_dir
         self.freq_feed, self.time_feed,self.coord_feed, self.star_coord_feed = self.create_coord_and_time_feeds()
         self.data_feed = self.index_feed.feed.map(self.get_data_block, num_parallel_calls=1)
+
+        self.coord_dim_feed = CoordinateDimFeed(self.coord_feed)
+        self.star_coord_dim_feed = CoordinateDimFeed(self.star_coord_feed)
+        self.continue_feed = ContinueFeed(self.coord_feed.time_feed)
+
         self.datapack_feed = tf.data.Dataset.zip((self.data_feed,
                             self.freq_feed.feed,
-                             self.coord_feed.feed,
-                             self.star_coord_feed.feed))
+                            self.coord_feed.feed,
+                            self.star_coord_feed.feed,
+                            self.coord_dim_feed.feed,
+                            self.star_coord_dim_feed.feed,
+                            self.continue_feed.feed))
         self.feed = self.datapack_feed
 
     def _get_coords(self, solset, soltab, selection = None):

@@ -1,6 +1,8 @@
 from .datapack import DataPack
 import tensorflow as tf
 import numpy as np
+from . import logging
+
 
 class Callback(object):
     def __init__(self, *args, **kwargs):
@@ -45,30 +47,95 @@ class Callback(object):
 
         return tf.py_function(py_func, Tin, self.output_dtypes, name=self.name)
 
+class StoreHyperparameters(Callback):
+    def __init__(self, store_file):
+        super(StoreHyperparameters, self).__init__(store_file=store_file)
+
+    def generate(self, store_file):
+
+        if not isinstance(store_file, str):
+            raise ValueError("store_file should be str {}".format(type(store_file)))
+
+        np.savez(store_file, times=np.array([]), variance=np.array([]), lengthscales=np.array([]), a=np.array([]), b=np.array([]), timescale=np.array([]))
+
+
+        self.output_dtypes = [tf.int64]
+        self.name = 'StoreHyperparameters'
+
+        def store(time, variance, lengthscales, a, b, timescale):
+            data = np.load(store_file)
+
+            times = np.array([time] + list(data['times']))
+            variance = np.array([variance] + list(data['variance']))
+            lengthscales = np.array([lengthscales] + list(data['lengthscales']))
+            a = np.array([a] + list(data['a']))
+            b = np.array([b] + list(data['b']))
+            timescale = np.array([timescale] + list(data['timescale']))
+
+            np.savez(store_file,
+                     times=times,
+                     variance=variance,
+                     lengthscales=lengthscales,
+                     a=a,
+                     b=b,
+                     timescale=timescale
+                     )
+
+            return [np.array(len(times),dtype=np.int64)]
+
+        return store
+
 class DatapackStoreCallback(Callback):
-    def __init__(self, datapack, solset, soltab, dir_sel=None, ant_sel=None, freq_sel=None, pol_sel=None):
+    def __init__(self, datapack, solset, soltab, **selection):
         super(DatapackStoreCallback, self).__init__(datapack=datapack,
                                                     solset=solset,
                                                     soltab=soltab,
-                                                    dir_sel=dir_sel,
-                                                    ant_sel=ant_sel,
-                                                    freq_sel=freq_sel,
-                                                    pol_sel=pol_sel)
+                                                    **selection)
 
-    def generate(self, datapack, solset, soltab, dir_sel, ant_sel, freq_sel, pol_sel):
+    def generate(self, datapack, solset, soltab, **selection):
 
         if not isinstance(datapack, str):
             datapack = datapack.filename
 
+        selection.pop('time',None)
+
         self.output_dtypes = [tf.int64]
         self.name = 'DatapackStoreCallback'
 
-        def store(time_start, time_step, array):
+        def store(time_start, time_stop, array):
             with DataPack(datapack,readonly=False) as dp:
                 print(array.shape)
                 dp.current_solset = solset
-                dp.select(time=slice(time_start, time_step, 1))
+                dp.select(time=slice(time_start, time_stop, 1), **selection)
                 dp.__setattr__(soltab, array)#, dir=dir_sel, ant=ant_sel, freq=freq_sel, pol=pol_sel
             return [np.array(array.__sizeof__(),dtype=np.int64)]
 
         return store
+
+
+class GetLearnIndices(Callback):
+    def __init__(self, dist_cutoff=0.3):
+        super(GetLearnIndices, self).__init__(dist_cutoff=dist_cutoff)
+
+    def generate(self, dist_cutoff):
+        self.output_dtypes = [tf.int64]
+        self.name = 'GetLearnIndices'
+        def get_learn_indices(X):
+            """Get the indices of non-redundant antennas
+            :param X: np.array, float64, [N, 3]
+                Antenna locations
+            :param cutoff: float
+                Mark redundant if antennas within this in km
+            :return: np.array, int64
+                indices such that all antennas are at least cutoff apart
+            """
+            N = X.shape[0]
+            Xa, inverse = np.unique(X, return_inverse=True, axis=0)
+            Na = len(Xa)
+            keep = []
+            for i in range(Na):
+                if np.all(np.linalg.norm(Xa[i:i + 1, :] - Xa[keep, :], axis=1) > dist_cutoff):
+                    keep.append(i)
+            logging.info("Training on antennas: {}".format(keep))
+            return [(np.where(np.isin(inverse, keep, assume_unique=True))[0]).astype(np.int64)]
+        return get_learn_indices

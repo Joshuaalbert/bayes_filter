@@ -2,18 +2,20 @@
 This file contains the code to use gpflow to optimise the kernel hyperparameters of D(D)TEC data.
 We use a global concensus model to speed things up.
 """
+from bayes_filter import float_type
+from bayes_filter.callbacks import Callback
 
 from .kernels import DTECIsotropicTimeGeneral
 from .misc import safe_cholesky
 
 import tensorflow as tf
-import numpy as np
 import gpflow as gp
 
 from gpflow import transforms
 from gpflow import settings
 from gpflow import DataHolder
 from gpflow.logdensities import multivariate_normal
+from . import logging
 
 from gpflow.params import Parameter, Parameterized, ParamList
 from gpflow.decors import params_as_tensors, autoflow
@@ -85,7 +87,7 @@ class GPRCustom(gp.models.GPR):
 
 class DTECKernel(gp.kernels.Kernel):
     def __init__(self, input_dim, variance=1., lengthscales=10.0,
-                 velocity=[0.,0.,0.], a = 250., b = 50., resolution=10,
+                 velocity=[0.,0.,0.], a = 250., b = 50., timescale=30.,resolution=10,
                  active_dims=None, fed_kernel='RBF', obs_type='DTEC',name=None):
         """
         - input_dim is the dimension of the input to the kernel
@@ -108,6 +110,8 @@ class DTECKernel(gp.kernels.Kernel):
                                       dtype=settings.float_type)
         self.b = Parameter(b, transform=transforms.positiveRescale(b),
                                       dtype=settings.float_type)
+        self.timescale = Parameter(timescale, transform=transforms.positiveRescale(timescale),
+                                      dtype=settings.float_type)
         self.resolution = resolution
         self.obs_type = obs_type
         self.fed_kernel = fed_kernel
@@ -125,58 +129,79 @@ class DTECKernel(gp.kernels.Kernel):
             X, X2 = self._slice(X, X2)
 
         kern = DTECIsotropicTimeGeneral(variance=self.variance, lengthscales=self.lengthscales,
-                                a= self.a, b=self.b, fed_kernel=self.fed_kernel, obs_type=self.obs_type,
+                                a= self.a, b=self.b, timescale=self.timescale,
+                                        fed_kernel=self.fed_kernel, obs_type=self.obs_type,
                                squeeze=True,#ode_type='adaptive',
                                kernel_params={'resolution':self.resolution})
         return kern.K(X,X2)
 
-def py_function_optimise_hyperparams(X, mean_dtec, var_dtec, constrained_states, resolution=8, maxiter=100):
-    """
-    Use GPFlow's L-BFGS solver to do the proximity operation.
-    This is a py_function and so the incoming are expected to come from a tensorflow session call to py_function.
+class KernelHyperparameterSolveCallback(Callback):
+    def __init__(self,resolution=8, maxiter=100,obs_type='DDTEC', fed_kernel='RBF'):
+        """
+            Create the python function for use with tf.py_function that will solve the hyperparameter inference problem
+            using GPFlow's L-BFGS solver.
 
-    :param constrained_states: namedtuple(variance, lengthscales, a, b)
-        The constrained parameters passed in from tensorflow, requires calling .numpy() on them.
-        Initial values.
-    :param X: float_type array [N,ndim]
-        The coordinates of the dtecs
-    :param mean_dtec: float_type array [N, 1]
-        The mean tec in mTECU
-    :param var_dtec: float_type array [N, 1]
-        The var of dtec in mTECU
-    :return: same named tuple as constrained_states
-        The hyper params that optimise the logprob of the mean_dtec, and var_dtec
-    """
-    mean_dtec = mean_dtec.numpy()
-    var_dtec = var_dtec.numpy()
-    X = X.numpy()
-
-    states = {key:val.numpy().reshape((1,)) for key,val in constrained_states._asdict().items()}
-    # variance, lengthscales, a, b, timescales = constrained_states.variance.numpy(), constrained_states.lengthscales.numpy(), \
-    #                                            constrained_states.a.numpy(), constrained_states.b.numpy(), constrained_states.timescales.numpy()
-    with tf.Session(graph=tf.Graph()) as sess:
-        kern = DTECKernel(13,
-                        # variance=variance,
-                        # lengthscales=lengthscales,
-                        # a = a,
-                        # b = b,
-                        resolution=resolution,
-                        fed_kernel='RBF',
-                        obs_type='DDTEC',
-                        **states)
-
-        m = GPRCustom(X, mean_dtec, var_dtec, kern)
-
-        m.likelihood.variance.trainable = False
-
-        gp.train.ScipyOptimizer().minimize(m,maxiter=maxiter)
-
-        variance = kern.variance.value
-        lengthscales = kern.lengthscales.value
-        a = kern.a.value
-        b = kern.b.value
-
-    return constrained_states._replace(variance=variance, lengthscales=lengthscales, a=a, b=b)
+            :param resolution: int
+                The resolution of the DTECKernel
+            :param maxiter: int
+                The maximum number of iterations in L-BFGS
+            :param obs_type: str
+                The type of data TEC, DTEC, DDTEC
+            :param fed_kernel: str
+                The type of FED kernel: RBF, M12, M32, M52
+                TODO: add Histogram spectrum
+            :return: callable
+                The function that solves hyperparameters
+            """
+        super(KernelHyperparameterSolveCallback, self).__init__(resolution=resolution,
+                                                                maxiter=maxiter,
+                                                                obs_type=obs_type,
+                                                                fed_kernel=fed_kernel)
+    def generate(self, resolution, maxiter,obs_type, fed_kernel):
+        self.output_dtypes = [float_type]*5
+        self.name = 'KernelHyperparameterSolveCallback'
 
 
+        def optimise_hyperparams(X, mean_dtec, var_dtec, init_variance, init_lengthscales, init_a, init_b, init_timescale):
+            """
+            py_function that solves hyperparameters for DDTEC kernel.
 
+            :param X:
+            :param mean_dtec:
+            :param var_dtec:
+            :param init_variance:
+            :param init_lengthscales:
+            :param init_a:
+            :param init_b:
+            :param init_timescale:
+            :return:
+            """
+
+            with tf.Session(graph=tf.Graph()) as sess:
+                kern = DTECKernel(13,
+                                variance=init_variance,
+                                lengthscales=init_lengthscales,
+                                a = init_a,
+                                b = init_b,
+                                timescale = init_timescale,
+                                resolution=resolution,
+                                fed_kernel=fed_kernel,
+                                obs_type=obs_type)
+                                # **states)
+
+                m = GPRCustom(X, mean_dtec, var_dtec, kern)
+
+                m.likelihood.variance.trainable = False
+
+                gp.train.ScipyOptimizer().minimize(m,maxiter=maxiter)
+                logging.info("Final loglikelihood: {}".format(m.compute_log_likelihood()))
+
+                variance = kern.variance.value
+                lengthscales = kern.lengthscales.value
+                a = kern.a.value
+                b = kern.b.value
+                timescale = kern.timescale.value
+
+            return [variance, lengthscales, a, b, timescale]
+
+        return optimise_hyperparams

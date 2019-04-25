@@ -20,6 +20,7 @@ def test_histogram(tf_session):
         heights = tf.exp(-0.5*edgescales**2/1.**2)[:-1]
         kern = Histogram(heights, edgescales=edgescales)
         x = tf.constant(np.linspace(0.,10.,100)[:,None],dtype=float_type)
+        x = tf.concat([x,x],axis=-1)
 
         h,e = tf_session.run([kern.heights, kern.edgescales])
 

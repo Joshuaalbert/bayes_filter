@@ -18,6 +18,51 @@ from . import logging
 from collections import namedtuple
 from .coord_transforms import itrs_to_enu_with_references,tf_coord_transform
 from .kernels import DTECIsotropicTimeGeneral
+from .settings import angle_type, dist_type
+
+def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_name: str,
+                                   screen_directions = None, srl_file = None,
+                                        remake_posterior_solsets=False):
+    screen_solset = "screen_{}".format(posterior_name)
+    data_solset = 'data_{}'.format(posterior_name)
+    with datapack:
+        if remake_posterior_solsets:
+            datapack.delete_solset(data_solset)
+            datapack.delete_solset(screen_solset)
+            logging.info("Deleting existing solsets: {} {}".format(data_solset, screen_solset))
+        if data_solset not in datapack.solsets or screen_solset not in datapack.solsets:
+            logging.info("Creating posterior solsets")
+            datapack.current_solset = solset
+            datapack.select(ant=None, time=None, dir=None, freq=None, pol=None)
+            axes = datapack.axes_phase
+            antenna_labels, antennas = datapack.get_antennas(axes['ant'])
+            patch_names, directions = datapack.get_directions(axes['dir'])
+            timestamps, times = datapack.get_times(axes['time'])
+            freq_labels, freqs = datapack.get_freqs(axes['freq'])
+            pol_labels, pols = datapack.get_pols(axes['pol'])
+            Npol, Nd, Na, Nf, Nt = len(pols), len(directions), len(antennas), len(freqs), len(times)
+            datapack.add_solset(data_solset,
+                                array_file=DataPack.lofar_array,
+                                directions=np.stack([directions.ra.to(angle_type).value,
+                                                     directions.dec.to(angle_type).value], axis=1),
+                                patch_names=patch_names)
+
+            datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
+                                dir=patch_names)
+            datapack.add_soltab('phase000', weightDtype='f64', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                ant=antenna_labels, dir=patch_names)
+
+            datapack.add_solset(screen_solset,
+                                array_file=DataPack.lofar_array,
+                                directions=np.stack([screen_directions.ra.to(angle_type).value,
+                                                     screen_directions.dec.to(angle_type).value], axis=1))
+            screen_patch_names, _ = datapack.directions
+            datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
+                                dir=screen_patch_names)
+            datapack.add_soltab('phase000', weightDtype='f64', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                ant=antenna_labels, dir=screen_patch_names)
+
+            datapack.current_solset = solset
 
 def dict2namedtuple(d, name="Result"):
     res = namedtuple(name, list(d.keys()))
@@ -78,7 +123,7 @@ def plot_graph(tf_graph,ax=None, filter=False):
     nx.relabel_nodes(G, mapping, copy=False)
     nx.draw(G, cmap = plt.get_cmap('jet'), with_labels = True, ax=ax)
 
-def make_example_datapack(Nd, Nf, Nt, pols=None, gain_noise=0.05, name='test.hdf5', obs_type='DDTEC',clobber=False):
+def make_example_datapack(Nd, Nf, Nt, pols=None, index_n=1, gain_noise=0.05, name='test.hdf5', obs_type='DDTEC',clobber=False):
     """
 
     :param Nd:
@@ -132,18 +177,17 @@ def make_example_datapack(Nd, Nf, Nt, pols=None, gain_noise=0.05, name='test.hdf
         tec_conversion = -8.440e6 / freqs  # Nf
         phase = []
         with tf.Session(graph=tf.Graph()) as sess:
-            index_feed = IndexFeed(1)
+            index_feed = IndexFeed(index_n)
             time_feed = TimeFeed(index_feed, times)
             coord_feed = CoordinateFeed(time_feed, directions, antennas, coord_map=tf_coord_transform(
                 itrs_to_enu_with_references(antennas[0, :], [up.ra.rad, up.dec.rad], antennas[0, :])))
             init, next = init_feed(coord_feed)
-            kern = DTECIsotropicTimeGeneral(0.17,obs_type=obs_type,b=100.,lengthscales=15.,kernel_params={'resolution':5})
+            kern = DTECIsotropicTimeGeneral(0.17,obs_type=obs_type,b=100.,lengthscales=15.,a=300., timescale=50., kernel_params={'resolution':5})
             K = kern.K(next)
             Z = tf.random_normal(shape=tf.shape(K)[0:1],dtype=K.dtype)
             ddtec = tf.matmul(safe_cholesky(K),Z[:,None])[:,0]
             sess.run(init)
-            for t in times:
-
+            for t in times[::index_n]:
                 # plt.imshow(sess.run(K))
                 # plt.show()
                 phase.append(sess.run(ddtec)[:,None]*tec_conversion)

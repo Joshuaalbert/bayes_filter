@@ -545,17 +545,3 @@ class DataPack(object):
 
 
 
-def test_datapack():
-    datapack = DataPack('test.h5',readonly=False)
-    datapack.current_solset = 'sol000'
-    datapack.select(ant="RS*")
-    phase, axes = datapack.phase
-    print(axes)
-    datapack.phase = np.ones_like(phase)
-    print(datapack.phase)
-    # # datapack.add_solset('test')
-    # print(datapack.soltabs)
-    # # print(datapack.directions)
-    # datapack.add_soltab('foo', ant=['CS001HBA0'], dir=['patch_0'], freq=[0., 1.])
-    # print(datapack)
-    # datapack.delete_soltab('foo')

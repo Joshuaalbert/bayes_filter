@@ -3,6 +3,7 @@ from .common_setup import *
 from ..misc import make_example_datapack
 import numpy as np
 import pylab as plt
+import os
 
 from bayes_filter.plotting import animate_datapack, plot_vornoi_map
 
@@ -13,7 +14,7 @@ def test_plotdatapack():
     # dp.plot(ant_sel=None, pol_sel=slice(0,1,1), time_sel=slice(0,1,1), fignames=['test_fig.png'], solset='sol000', observable='phase', plot_facet_idx=True,
     #         labels_in_radec=True, show=False)
 
-    datapack = make_example_datapack(10, 2, 10, pols=['XX'], clobber=True, name='plotting_test.h5')
+    datapack = make_example_datapack(10, 2, 10, pols=['XX'], clobber=True, name=os.path.join(TEST_FOLDER,'plotting_test.h5'))
 
     animate_datapack(datapack,
            os.path.join(TEST_FOLDER, 'test_plotting'),num_processes=2,observable='phase',labels_in_radec=True,

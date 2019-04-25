@@ -1,14 +1,12 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
 from .kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
-from .parameters import Parameter, ScaledPositiveBijector, ConstrainedBijector, ScaledLowerBoundedBijector
+from .parameters import Parameter, ScaledLowerBoundedBijector
 from collections import namedtuple
-from .misc import diagonal_jitter, log_normal_solve_fwhm, K_parts, safe_cholesky
+from .misc import log_normal_solve_fwhm, safe_cholesky
 from .settings import float_type
 import numpy as np
 
-def constrained_scaled_positive(a,b,scale):
-    return tfp.bijectors.Chain([ConstrainedBijector(a,b),ScaledPositiveBijector(scale)])
 
 class Target(object):
     def __init__(self, bijectors=None, distributions=None, unconstrained_values=None):

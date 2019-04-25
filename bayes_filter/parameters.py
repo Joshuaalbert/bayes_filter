@@ -171,4 +171,5 @@ class Parameter(object):
             self.constrained_prior = 0.
 
 
-
+def constrained_scaled_positive(a,b,scale):
+    return tfp.bijectors.Chain([ConstrainedBijector(a,b),ScaledPositiveBijector(scale)])

@@ -11,7 +11,7 @@ def tf_coord_transform(transform):
         return tf.py_function(lambda X: transform(X.numpy()), [X], X.dtype)
     return tf_transform
 
-
+#TODO: make a callback
 def itrs_to_enu_6D(X, ref_location=None):
     """
     Convert the given coordinates from ITRS to ENU
@@ -40,6 +40,7 @@ def itrs_to_enu_6D(X, ref_location=None):
     directions = directions.transform_to(enu).cartesian.xyz.value.T
     return np.concatenate([X[:,0:1], directions, antennas], axis=1).reshape(shape+(7,))
 
+#TODO: make a callback
 
 def itrs_to_enu_with_references(ref_antenna=None, ref_direction=None, ref_location=None):
     """

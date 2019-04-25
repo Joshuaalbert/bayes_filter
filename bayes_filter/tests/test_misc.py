@@ -1,12 +1,13 @@
 import os
 
-from .common_setup import *
+from .common_setup import tf_session, TEST_FOLDER
 import numpy as np
+import os
 import tensorflow as tf
 
 from bayes_filter import jitter
 from bayes_filter.misc import random_sample, flatten_batch_dims, load_array_file, timer, diagonal_jitter, \
-    log_normal_solve_fwhm
+    log_normal_solve_fwhm,make_example_datapack, maybe_create_posterior_solsets
 
 
 def test_random_sample(tf_session):
@@ -59,3 +60,18 @@ def test_log_normal_solve_fwhm():
     mu, stddev = log_normal_solve_fwhm(np.exp(1), np.exp(2), np.exp(-1))
     assert np.isclose(stddev**2, 0.5 * (0.5) ** 2)
     assert np.isclose(mu, 3./2. + 0.5 * (0.5) ** 2)
+
+def test_make_example_datapack():
+    datapack = make_example_datapack(4,2,3,name=os.path.join(TEST_FOLDER,'test_misc.h5'),clobber=True)
+
+def test_maybe_create_posterior_solsets():
+    datapack = make_example_datapack(4,2,3,name=os.path.join(TEST_FOLDER,'test_misc.h5'),clobber=True)
+    patch_names, _ = datapack.directions
+    _, screen_directions = datapack.get_directions(patch_names)
+    maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior',screen_directions=screen_directions, remake_posterior_solsets=False)
+    assert "data_posterior" in datapack.solsets
+    assert "screen_posterior" in datapack.solsets
+    maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior',screen_directions=screen_directions, remake_posterior_solsets=True)
+    assert "data_posterior" in datapack.solsets
+    assert "screen_posterior" in datapack.solsets
+    print(datapack)
