@@ -177,31 +177,41 @@ class KernelHyperparameterSolveCallback(Callback):
             :return:
             """
 
+            # print(var_dtec)
+
             with tf.Session(graph=tf.Graph()) as sess:
                 kern = DTECKernel(13,
-                                variance=init_variance,
-                                lengthscales=init_lengthscales,
-                                a = init_a,
-                                b = init_b,
-                                timescale = init_timescale,
+                                variance=init_variance.reshape(()),
+                                lengthscales=init_lengthscales.reshape(()),
+                                a = init_a.reshape(()),
+                                b = init_b.reshape(()),
+                                timescale = init_timescale.reshape(()),
                                 resolution=resolution,
                                 fed_kernel=fed_kernel,
                                 obs_type=obs_type)
                                 # **states)
 
-                m = GPRCustom(X, mean_dtec, var_dtec, kern)
+                # kern = DTECKernel(13,
+                #                   resolution=resolution,
+                #                   fed_kernel=fed_kernel,
+                #                   obs_type=obs_type)
+                # **states)
+
+                m = GPRCustom(X, mean_dtec[:,None], var_dtec[None,:], kern)
 
                 m.likelihood.variance.trainable = False
 
                 gp.train.ScipyOptimizer().minimize(m,maxiter=maxiter)
-                logging.info("Final loglikelihood: {}".format(m.compute_log_likelihood()))
+                logging.info("Final loglikelihood: {}".format(m.compute_log_likelihood()/X.shape[0]))
 
-                variance = kern.variance.value
-                lengthscales = kern.lengthscales.value
-                a = kern.a.value
-                b = kern.b.value
-                timescale = kern.timescale.value
+                variance = kern.variance.value.reshape(init_variance.shape)
+                lengthscales = kern.lengthscales.value.reshape(init_lengthscales.shape)
+                a = kern.a.value.reshape(init_a.shape)
+                b = kern.b.value.reshape(init_b.shape)
+                timescale = kern.timescale.value.reshape(init_timescale.shape)
 
-            return [variance, lengthscales, a, b, timescale]
+            result = [variance, lengthscales, a, b, timescale]
+            print(result)
+            return result
 
         return optimise_hyperparams

@@ -28,20 +28,13 @@ class Target(object):
             self.parameters = [Parameter(bijector=b, distribution=d) for (b, d) in
                            zip(bijectors, distributions)]
 
+    @property
     def get_default_parameters(self):
         raise NotImplementedError("must subclass")
 
     @property
     def bijectors(self):
         return [p.bijector for p in self.parameters]
-
-    def unconstrained_states(self, *states):
-        # with tf.control_dependencies([tf.print("constrained_states -> ",*[(tf.shape(s),s) for s in states])]):
-        return [b.inverse(s) for (s,b) in zip(states, self.bijectors)]
-
-    def constrained_states(self, *unconstrained_states):
-        # with tf.control_dependencies([tf.print("unconstrained_states -> ",*[(tf.shape(s),s) for s in unconstrained_states])]):
-        return [b.forward(s) for (s,b) in zip(unconstrained_states, self.bijectors)]
 
     def logp(self,*unconstrained_states):
         """
@@ -289,7 +282,7 @@ class DTECToGainsSAEM(Target):
                  variables=None):
         self._setup = False
 
-        self.bijectors = DTECToGainsSAEM.DTECToGainsParams(
+        bijectors = DTECToGainsSAEM.DTECToGainsParams(
             y_sigma=ScaledLowerBoundedBijector(1e-2, 0.2),
             variance=ScaledLowerBoundedBijector(1e-3, 1.),
             lengthscales=ScaledLowerBoundedBijector(3., 15.),
@@ -297,12 +290,14 @@ class DTECToGainsSAEM(Target):
             b=ScaledLowerBoundedBijector(10., 100.),
             timescale=ScaledLowerBoundedBijector(10., 50.))
 
+        super(DTECToGainsSAEM, self).__init__(bijectors=bijectors, distributions=None, unconstrained_values=None)
+
         if variables is None:
-            variables = self.init_variables(initial_hyperparams)
+            variables = self.init_variables(**initial_hyperparams)
 
         self.variables = variables
-        self.constrained_hyperparams = self.constrained_states(self.unstack_state(self.variables))
-        super(DTECToGainsSAEM, self).__init__(bijectors=self.bijectors, distributions=None, unconstrained_values=None)
+        self.constrained_hyperparams = self.constrained_state(self.unstack_state(self.variables))
+
 
     def setup_target(self,X, Xstar, Y_real, Y_imag, freqs,fed_kernel = 'RBF', obs_type='DDTEC', full_posterior=True, which_kernel = 0,
                  kernel_params={}, L=None, Nh=None, squeeze=True):
@@ -329,24 +324,26 @@ class DTECToGainsSAEM(Target):
         # Nf
         self.freqs = freqs
 
+        kern = None
+
         if which_kernel == 0:
             kern = DTECIsotropicTimeGeneral(
-                variance=self.state.variance,
-                lengthscales=self.state.lengthscales,
-                timescale=self.state.timescale,
-                a=self.state.a,
-                b=self.state.b,
+                variance=self.constrained_hyperparams.variance,
+                lengthscales=self.constrained_hyperparams.lengthscales,
+                timescale=self.constrained_hyperparams.timescale,
+                a=self.constrained_hyperparams.a,
+                b=self.constrained_hyperparams.b,
                 fed_kernel=self.fed_kernel,
                 obs_type=self.obs_type,
                 squeeze=squeeze,
                 kernel_params=kernel_params)
         if which_kernel == 1:
             kern = DTECIsotropicTimeGeneralODE(
-                variance=self.state.variance,
-                lengthscales=self.state.lengthscales,
-                timescale=self.state.timescale,
-                a=self.state.a,
-                b=self.state.b,
+                variance=self.constrained_hyperparams.variance,
+                lengthscales=self.constrained_hyperparams.lengthscales,
+                timescale=self.constrained_hyperparams.timescale,
+                a=self.constrained_hyperparams.a,
+                b=self.constrained_hyperparams.b,
                 fed_kernel=self.fed_kernel,
                 obs_type=self.obs_type,
                 squeeze=squeeze,
@@ -354,11 +351,11 @@ class DTECToGainsSAEM(Target):
                 kernel_params=kernel_params)
         if which_kernel == 2:
             kern = DTECIsotropicTimeGeneralODE(
-                variance=self.state.variance,
-                lengthscales=self.state.lengthscales,
-                timescale=self.state.timescale,
-                a=self.state.a,
-                b=self.state.b,
+                variance=self.constrained_hyperparams.variance,
+                lengthscales=self.constrained_hyperparams.lengthscales,
+                timescale=self.constrained_hyperparams.timescale,
+                a=self.constrained_hyperparams.a,
+                b=self.constrained_hyperparams.b,
                 fed_kernel=self.fed_kernel,
                 obs_type=self.obs_type,
                 squeeze=squeeze,
@@ -368,21 +365,24 @@ class DTECToGainsSAEM(Target):
         # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
 
         # (batch), N+Ns, N+Ns
+        # with tf.control_dependencies([tf.print(tf.shape(X), tf.shape(Xstar), tf.shape(self.Xconcat))]):
         K = kern.K(self.Xconcat)
         self.K = K
         # K = kern.matrix(self.Xconcat[:, 4:7],self.Xconcat[:, 4:7])
         # with tf.control_dependencies([tf.print("asserting initial K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
         # N+Ns, N+Ns
-
-        L_new = safe_cholesky(K)
-        if squeeze:
-            L_new.set_shape(tf.TensorShape([Nh, Nh]))
-        else:
-            L_new.set_shape(tf.TensorShape([None, Nh, Nh]))
-        if L is None:
-            self.L = L_new
-        else:
-            self.L = tf.cond(tf.equal(tf.shape(L)[-1], self.Nh), lambda: L, lambda: L_new)
+        with tf.control_dependencies([tf.print(tf.shape(K))]):
+            self.L = safe_cholesky(K)
+        # if squeeze:
+        #     L_new.set_shape(tf.TensorShape([Nh, Nh]))
+        # else:
+        #     L_new.set_shape(tf.TensorShape([None, Nh, Nh]))
+        # if L is None:
+        #     self.L = L_new
+        # else:
+        #     # requires Nh given.
+        #     # TODO: provide a new signal for when to recalculate L
+        #     self.L = tf.cond(tf.equal(tf.shape(L)[-1], self.Nh), lambda: L, lambda: L_new)
 
         self._setup = True
 
@@ -390,20 +390,21 @@ class DTECToGainsSAEM(Target):
     def setup(self):
         return self._setup
 
-    @staticmethod
-    def get_default_parameters():
+    @property
+    def get_default_parameters(self):
         return DTECToGainsSAEM.DTECToGainsParams(y_sigma=0.1,variance=0.1, lengthscales=15., a=250., b=100., timescale=100.)
 
-    def init_variables(self, initial_hyperparams={}):
-        initial_hyperparams = self.get_default_parameters()._replace(**initial_hyperparams)
+    def init_variables(self, **initial_hyperparams):
+        #makes a namedtuple
+        initial_hyperparams = self.get_default_parameters._replace(**initial_hyperparams)
         initial_hyperparams = initial_hyperparams._replace(
-            *[tf.convert_to_tensor(v, dtype=float_type) for v in initial_hyperparams])
+            **{k:tf.convert_to_tensor(v, dtype=float_type) for k,v in initial_hyperparams._asdict().items()})
 
-        bijectors = self.get_bijectors()
+        bijectors = self.bijectors
 
         unconstrained_vars = DTECToGainsSAEM.DTECToGainsParams(
             *[tf.reshape(b.inverse(v), (-1,1)) for (b, v) in zip(bijectors, initial_hyperparams)])
-        variables = tf.get_variable('state_vars', initializer=DTECToGainsSAEM.stack_state(unconstrained_vars))
+        variables = tf.get_variable('state_vars', initializer=self.stack_state(unconstrained_vars))
 
         return variables
 
@@ -412,8 +413,8 @@ class DTECToGainsSAEM(Target):
             *[tf.reshape(state[..., i:i + 1], (-1, 1)) for i in
               range(len(self.parameters))])
 
-    def stack_state(state):
-        return tf.stack(state, axis=0)
+    def stack_state(self,state):
+        return tf.concat(state, axis=-1)
 
     def unconstrained_state(self, state):
         """
@@ -432,6 +433,15 @@ class DTECToGainsSAEM(Target):
         """
         return DTECToGainsSAEM.DTECToGainsParams(*[self.parameters[i].bijector.forward(state[i]) for i in range(len(self.parameters))])
 
+    # def unconstrained_states(self, *states):
+    #     # with tf.control_dependencies([tf.print("constrained_states -> ",*[(tf.shape(s),s) for s in states])]):
+    #     return [b.inverse(s) for (s,b) in zip(states, self.bijectors)]
+    #
+    # def constrained_states(self, *unconstrained_states):
+    #     # with tf.control_dependencies([tf.print("unconstrained_states -> ",*[(tf.shape(s),s) for s in unconstrained_states])]):
+    #     print(unconstrained_states)
+    #     return [b.forward(s) for (s,b) in zip(unconstrained_states, self.bijectors)]
+
     def transform_samples(self, dtec):
         """
         Calculate transformed samples.
@@ -442,6 +452,7 @@ class DTECToGainsSAEM(Target):
 
         # transform
         # S, N+Ns
+        # TODO: wrong shape
         dtec_transformed = tf.matmul(dtec, self.L, transpose_b=True)#tf.einsum("ab,sb->sa",self.L, dtec)
 
         return dtec_transformed
@@ -473,7 +484,7 @@ class DTECToGainsSAEM(Target):
         return logp
 
     def logp_params(self, variables):
-        state = self.constrained_states(variables)
+        state = self.constrained_state(variables)
         return sum([tf.reduce_mean(p.constrained_prior.log_prob(s)) for (p, s) in zip(self.parameters, state)])
 
     def logp_gains(self, constrained_dtec):
@@ -490,8 +501,8 @@ class DTECToGainsSAEM(Target):
         dtec_marginal = constrained_dtec[:, :self.N]
         # S, N, Nf
         g_real, g_imag = self.forward_equation(dtec_marginal)
-        likelihood_real = tfp.distributions.Laplace(loc=g_real, scale=self.state.y_sigma.constrained_value[:, :, None])
-        likelihood_imag = tfp.distributions.Laplace(loc=g_imag, scale=self.state.y_sigma.constrained_value[:, :, None])
+        likelihood_real = tfp.distributions.Laplace(loc=g_real, scale=self.constrained_hyperparams.y_sigma[:, :, None])
+        likelihood_imag = tfp.distributions.Laplace(loc=g_imag, scale=self.constrained_hyperparams.y_sigma[:, :, None])
 
         # S
         logp = tf.reduce_sum(likelihood_real.log_prob(self.Y_real[None, :, :]), axis=[1, 2]) + \

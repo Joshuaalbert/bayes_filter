@@ -2,7 +2,7 @@ from .common_setup import *
 from bayes_filter.datapack import DataPack
 from bayes_filter.feeds import IndexFeed, init_feed, TimeFeed, ContinueFeed, CoordinateFeed, DataFeed, \
     CoordinateDimFeed, DatapackFeed, FreqFeed
-from ..misc import make_example_datapack
+from ..misc import make_example_datapack, maybe_create_posterior_solsets
 
 def test_freq_feed(tf_session):
     with tf_session.graph.as_default():
@@ -14,11 +14,18 @@ def test_freq_feed(tf_session):
 
 def test_index_feed(tf_session):
     with tf_session.graph.as_default():
-        index_feed = IndexFeed(2)
+        index_feed = IndexFeed(2,3)
         init, next = init_feed(index_feed)
         tf_session.run(init)
         out = tf_session.run(next)
         assert out[1] - out[0] == index_feed._step
+        out = tf_session.run(next)
+        assert out[1] - out[0] == 1
+        try:
+            out = tf_session.run(next)
+            assert False
+        except tf.errors.OutOfRangeError:
+            assert True
 
 
 def test_time_feed(tf_session, index_feed):
@@ -100,7 +107,7 @@ def test_data_feed(tf_session, index_feed):
 
 def test_coord_dim_feed(tf_session):
     with tf_session.graph.as_default():
-        index_feed = IndexFeed(2)
+        index_feed = IndexFeed(2,3)
         times = tf.linspace(0., 10., 3)[:, None]
         time_feed = TimeFeed(index_feed, times)
         X1 = tf.linspace(0., 1., 50)[:, None]
@@ -117,9 +124,16 @@ def test_datapack_feed(tf_session):
     with tf_session.graph.as_default():
         datapack = make_example_datapack(10, 2, 10, pols=['XX'],clobber=True, name=os.path.join(TEST_FOLDER,'test_feed_data.h5'))
         index_feed = IndexFeed(1)
-        datapack_feed = DatapackFeed(index_feed, datapack, {'sol000':'phase'},
-                     "sol000",
-                     selection={'ant':"RS*",'dir':None})
+        patch_names, _ = datapack.directions
+        _, screen_directions = datapack.get_directions(patch_names)
+        maybe_create_posterior_solsets(datapack, solset='sol000', posterior_name='posterior',
+                                       screen_directions=screen_directions)
+
+
+        datapack_feed = DatapackFeed(datapack, solset='sol000',
+                     postieror_name="posterior",
+                     selection={'ant':"RS*",'dir':None},
+                                     index_n=1)
         init, next = init_feed(datapack_feed)
         tf_session.run(init)
         print(tf_session.run(next)[2][:,0])

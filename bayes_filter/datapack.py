@@ -302,28 +302,6 @@ class DataPack(object):
             direction_table = solset_group._v_leaves['source']
             return direction_table.col('name'), direction_table.col('dir')
 
-    def soltab_axes(self,soltab):
-        with self:
-            if soltab not in self.soltabs:
-                logging.warn('Soltab {} does not exist.'.format(soltab))
-                return
-            with self:
-                if self.current_solset is None:
-                    raise ValueError("Current solset is None.")
-                solset_group = self._H.root._v_groups[self.current_solset]
-                soltab_group = solset_group._v_groups[soltab]
-                val_leaf = soltab_group._v_leaves['val']
-                axes = val_leaf.attrs['AXES'].split(',')
-                shape = []
-                type = []
-                vals = []
-                for axis in axes:
-                    axis_vals = soltab_group._v_leaves[axis].read()
-                    vals.append(axis_vals)
-                    shape.append(len(axis_vals))
-                    type.append(np.array(axis_vals).dtype)
-                return vals, axes
-
     def __repr__(self):
 
         def grouper(n, iterable, fillvalue=None):
@@ -367,6 +345,28 @@ class DataPack(object):
     def allowed_soltabs(self):
         return ['phase', 'amplitude', 'tec', 'scalarphase', 'coords']
 
+    def soltab_axes(self,soltab):
+        with self:
+            if soltab not in self.soltabs:
+                logging.warn('Soltab {} does not exist.'.format(soltab))
+                return
+            with self:
+                if self.current_solset is None:
+                    raise ValueError("Current solset is None.")
+                solset_group = self._H.root._v_groups[self.current_solset]
+                soltab_group = solset_group._v_groups[soltab]
+                val_leaf = soltab_group._v_leaves['val']
+                axes = val_leaf.attrs['AXES'].split(',')
+                shape = []
+                type = []
+                vals = []
+                for axis in axes:
+                    axis_vals = soltab_group._v_leaves[axis].read()
+                    vals.append(axis_vals)
+                    shape.append(len(axis_vals))
+                    type.append(np.array(axis_vals).dtype)
+                return vals, axes
+
     def get_selection(self,soltab):
         if self._selection is None:
             self._selection = {}
@@ -374,21 +374,45 @@ class DataPack(object):
             raise ValueError('Soltab {} does not exist.'.format(soltab))
         if self.current_solset is None:
             raise ValueError("Current solset is None.")
+
         selection = []
         for axis_val, axis in zip(*self.soltab_axes(soltab)):
             axis_selection = self._selection.get(axis, None)
             if axis_selection is None:
                 selection.append(slice(None,None,None))
-            if isinstance(axis_selection, slice):
+            elif isinstance(axis_selection, slice):
                 selection.append(axis_selection)
-            if isinstance(axis_selection, (tuple, list)):
+            elif isinstance(axis_selection, (tuple, list)):
                 selection.append(list(axis_selection))
-            if isinstance(axis_selection, str):
-                found = np.where(np.array([re.search(axis_selection,v.astype(type(axis_selection))) is not None for v in axis_val],dtype=np.bool))[0]
+            elif isinstance(axis_selection, str):
+                found = list(np.where(np.array([re.search(axis_selection,v.astype(type(axis_selection))) is not None for v in axis_val],dtype=np.bool))[0])
                 selection.append(found)
-        return tuple(selection)
+            else:
+                selection.append(np.searchsorted(axis_val, axis_selection.astype(axis_val.dtype)))
+                # raise ValueError("Selection {} not supported.".format(axis_selection))
 
+        # replace all lists with slices if possible: limitation of only one list per indexing
+        def _is_jump_contiguous(sel,n):
+            if len(range(int(sel[0]), int(sel[-1])+1, n)) != len(sel):
+                return False
+            return np.all(np.equal(list(range(int(sel[0]), int(sel[-1])+1, n)), sel))
+        corrected_selection = []
+        for sel in selection:
+            _sel = sel
+            if isinstance(sel, list):
+                for i in sel:
+                    if int(i) != i:
+                        raise ValueError("One of the list elements is not an int. {}".format(i))
+                for n in range(1,len(sel)+1,1):
+                    if _is_jump_contiguous(sel,n):
+                        _sel = slice(int(sel[0]), int(sel[-1])+1, n)
+                        break
+            corrected_selection.append(_sel)
 
+        num_lists = sum([1 if isinstance(sel,list) else 0 for sel in corrected_selection])
+        if num_lists > 1:
+            raise IndexError("Due to a limitation, only one fancy indexing can be applied per pytables getattr.")
+        return tuple(corrected_selection)
 
     def __getattr__(self, tab):
         """
@@ -466,6 +490,7 @@ class DataPack(object):
                         leaf = soltab_group._v_leaves['weight']
                     else:
                         leaf = soltab_group._v_leaves['val']
+                    # print(tab, selection, value.shape)
                     leaf.__setitem__(selection, value)
                 else:
                     if not isinstance(value, dict):

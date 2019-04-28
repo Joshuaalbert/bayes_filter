@@ -307,14 +307,15 @@ class DatapackPlotter(object):
         # Set up plotting
 
         with self.datapack:
-            self.datapack.switch_solset(solset)
+            self.datapack.current_solset = solset
             logging.info(
                 "Applying selection: ant={},time={},freq={},dir={},pol={}".format(ant_sel, time_sel, freq_sel, dir_sel,
                                                                                   pol_sel))
             self.datapack.select(ant=ant_sel, time=time_sel, freq=freq_sel, dir=dir_sel, pol=pol_sel)
             obs, axes = self.datapack.__getattr__(observable)
             if observable.startswith('weights_'):
-                obs = np.sqrt(np.abs(1. / obs))  # uncert from weights = 1/var
+                # obs = np.sqrt(np.abs(1. / obs))  # uncert from weights = 1/var
+                obs = np.sqrt(obs)  # uncert from weights = 1/var
                 phase_wrap = False
             if 'pol' in axes.keys():
                 # plot only first pol selected
@@ -322,7 +323,7 @@ class DatapackPlotter(object):
 
             # obs is dir, ant, freq, time
             antenna_labels, antennas = self.datapack.get_antennas(axes['ant'])
-            patch_names, directions = self.datapack.get_sources(axes['dir'])
+            patch_names, directions = self.datapack.get_directions(axes['dir'])
 
             timestamps, times = self.datapack.get_times(axes['time'])
             freq_dep = True
@@ -334,7 +335,7 @@ class DatapackPlotter(object):
                 freq_labels, freqs = [""], [None]
 
             if tec_eval_freq is not None:
-                obs = obs * -8.4480e9 / tec_eval_freq
+                obs = obs * -8.4480e6 / tec_eval_freq
 
             if phase_wrap:
                 obs = np.angle(np.exp(1j * obs))
@@ -400,7 +401,11 @@ class DatapackPlotter(object):
             if not isinstance(fignames, (tuple, list)):
                 fignames = [fignames]
         if fignames is not None:
-            assert Nt == len(fignames)
+            if Nt > len(fignames):
+                fignames = fignames[:Nt]
+            if Nt < len(fignames):
+                print(Nt, fignames)
+                raise ValueError("Gave too few fignames.")
 
         if mode == 'perantenna':
 
@@ -468,12 +473,13 @@ def _parallel_plot(arg):
     datapack, time_slice, kwargs, output_folder = arg
     dp = DatapackPlotter(datapack=datapack)
     with dp.datapack:
+        dp.datapack.current_solset = kwargs.get('solset','sol000')
         # Get the time selection desired
         dp.datapack.select(time=kwargs.get('time_sel', None))
         axes = dp.datapack.axes_phase
     # timeslice the selection
     times = axes['time']  # mjs
-    sel_list = times[time_slice]
+    sel_list = list(np.arange(len(times))[time_slice])#times[time_slice]
     kwargs['time_sel'] = sel_list
     fignames = [os.path.join(output_folder, "fig-{:04d}.png".format(j)) for j in range(len(times))[time_slice]]
     dp.plot(fignames=fignames, **kwargs)

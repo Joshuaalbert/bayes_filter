@@ -35,8 +35,9 @@ class Feed(object):
 
 
 class IndexFeed(Feed):
-    def __init__(self, step=1):
+    def __init__(self, step=1, end=None):
         self._step = step
+        self._end = end
         self.step = tf.convert_to_tensor(step, tf.int32)
         self.index_feed = tf.data.Dataset.from_generator(self.index_generator,
                                                          (tf.int32, tf.int32),
@@ -44,10 +45,17 @@ class IndexFeed(Feed):
         self.feed = self.index_feed
 
     def index_generator(self):
-        i = 0
-        while True:
-            i += self._step
-            yield i - self._step, i
+        if self._end is None:
+            i = 0
+            while True:
+                i += self._step
+                yield i - self._step, i
+        else:
+            i = 0
+            while i < self._end:
+                i += self._step
+                yield i - self._step, min(i, self._end)
+
 
 
 class DataFeed(Feed):
@@ -87,8 +95,8 @@ class DataFeed(Feed):
         return data
 
 class DatapackFeed(Feed):
-    def __init__(self, index_feed:IndexFeed, datapack:DataPack, data_map={'sol000':'phase'}, postieror_name='posterior',
-                 selection = {}, ref_ant=None, ref_dir=None, event_size=1, num_parallel_calls=10):
+    def __init__(self,  datapack:DataPack, solset='sol000', postieror_name='posterior',
+                 selection = {}, ref_ant=None, ref_dir=None, index_feed:IndexFeed = None, index_n:int = None, event_size=1, num_parallel_calls=10):
         """
         Create a time feed
         :param index_feed: IndexFeed
@@ -105,9 +113,12 @@ class DatapackFeed(Feed):
         self.num_parallel_calls = tf.convert_to_tensor(num_parallel_calls, tf.int32)
         self.event_size = tf.convert_to_tensor(event_size, tf.int32)
         self.index_feed = index_feed
+        self.index_n = index_n
         self.datapack = datapack
         self.selection = selection
-        self.data_map = data_map
+        self.solset = solset
+        self.posterior_name = postieror_name
+        self.data_map = {solset:'phase'}
         self.screen_solset = "screen_{}".format(postieror_name)
         self.posterior_solset = "data_{}".format(postieror_name)
         with self.datapack:
@@ -177,6 +188,10 @@ class DatapackFeed(Feed):
         Xd = coords["Xd"]
         Xa = coords["Xa"]
         freq_feed = FreqFeed(coords['Xf'])
+        if self.index_feed is None:
+            if self.index_n is None:
+                raise ValueError("At least index_n or index_feed must not be None.")
+            self.index_feed = IndexFeed(self.index_n, Xt.shape[0])
         time_feed = TimeFeed(self.index_feed, Xt.astype(np.float64), num_parallel_calls=self.num_parallel_calls)
         coord_feed = CoordinateFeed(time_feed,
                                      tf.convert_to_tensor(Xd, dtype=float_type),
@@ -205,6 +220,7 @@ class DatapackFeed(Feed):
         :return: float_type, Tensor, [N, D]
             The returned data block
         """
+        next_index = tf.minimum(next_index, self.time_feed.Nt)
         data = tf.py_function(self._get_block, [index, next_index], [float_type]*2)
         return [flatten_batch_dims(d, num_batch_dims=-self.event_size) for d in data]
 

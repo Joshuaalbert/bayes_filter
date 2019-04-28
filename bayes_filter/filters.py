@@ -8,10 +8,11 @@ from .misc import flatten_batch_dims, timer, random_sample, graph_store_get, gra
 from .hyper_parameter_opt import KernelHyperparameterSolveCallback
 from . import logging
 import gpflow as gp
+import os
 import numpy as np
 
 from .hyper_parameter_opt import KernelHyperparameterSolveCallback
-from .callbacks import DatapackStoreCallback, GetLearnIndices
+from .callbacks import DatapackStoreCallback, GetLearnIndices, PlotResults, StoreHyperparameters, PlotPerformance
 # from .misc import plot_graph
 # import pylab as plt
 
@@ -19,31 +20,46 @@ from .callbacks import DatapackStoreCallback, GetLearnIndices
 SampleParams = namedtuple('SampleParams',['num_leapfrog_steps', 'num_adapation_steps', 'target_rate', 'num_samples', 'num_burnin_steps'])
 
 class FreeTransitionSAEM(object):
-    def __init__(self, datapack_feed: DatapackFeed):
+    def __init__(self, datapack_feed: DatapackFeed, output_folder='./output_folder'):
         self.datapack_feed = datapack_feed
+        self._output_folder = os.path.abspath(output_folder)
+        os.makedirs(self._output_folder,exist_ok=True)
+
+    @property
+    def output_folder(self):
+        return self._output_folder
+
+    @property
+    def plot_folder(self):
+        return os.path.join(self.output_folder, 'plot_folder')
+
+    @property
+    def hyperparam_store(self):
+        return os.path.join(self.output_folder,'hyperparam_store.npz')
 
     def init_filter(self, init_kern_hyperparams={}, initial_stepsize=5e-3):
-        self.full_block_size = (self.datapack_feed.coord_feed.N + self.datapack_feed.star_coord_feed.N) * self.datapack_feed.coord_feed.time_feed.slice_size
+        self.full_block_size = (self.datapack_feed.coord_feed.N + self.datapack_feed.star_coord_feed.N) * self.datapack_feed.time_feed.slice_size
+        # TODO: full_block_size should come from the actually L.shape. Case: Xt.shape[0] < index_n
         temp_target = DTECToGainsSAEM(initial_hyperparams=init_kern_hyperparams)
         self.hyperparams_var = temp_target.variables
         graph_store_set('hyperparms_var',self.hyperparams_var)
 
-        self.step_sizes = [tf.get_variable(
+        self.step_sizes = tf.get_variable(
                             name='step_size_dtec',
                             initializer=lambda: tf.convert_to_tensor(initial_stepsize, dtype=float_type),
                             use_resource=True,
                             dtype=float_type,
-                            trainable=False)]
+                            trainable=False)
 
 
-        self.datapack_feed_iterator = tf.data.Dataset.zip(self.datapack_feed.index_feed, self.datapack_feed.feed).make_initializable_iterator()
+        self.datapack_feed_iterator = tf.data.Dataset.zip((self.datapack_feed.index_feed.feed, self.datapack_feed.feed)).make_initializable_iterator()
 
-        graph_store_set('init0',tf.group([self.datapack_feed_iterator.initializer] + [self.hyperparams_var.initializer] \
-                         + [step_size.initializer for step_size in self.step_sizes]))
+        self.init0 = tf.group([self.datapack_feed_iterator.initializer] + [self.hyperparams_var.initializer] \
+                         + [step_size.initializer for step_size in [self.step_sizes]])
 
     @property
     def initializer(self):
-        return graph_store_get('init0')
+        return self.init0 #graph_store_get('init0')
 
     def filter_step(self,
                     dtec_warmstart,
@@ -55,6 +71,7 @@ class FreeTransitionSAEM(object):
                     num_burnin_steps=100,
                     which_kernel=0,
                     kernel_params={},
+                    obs_type='DDTEC',
                     num_adapation_steps=100):
         """
 
@@ -79,14 +96,14 @@ class FreeTransitionSAEM(object):
         :return:
         """
 
-        sample_params = SampleParams(num_leapfrog_steps=num_leapfrog_steps, #tf.random_shuffle(tf.range(3,60,dtype=tf.int64))[0]
-                                   num_adapation_steps=num_adapation_steps,
-                                   target_rate=target_rate,
-                                   num_samples=num_samples,
-                                   num_burnin_steps=num_burnin_steps
+        sample_params = SampleParams(num_leapfrog_steps=tf.cast(num_leapfrog_steps, dtype=tf.int32), #tf.random_shuffle(tf.range(3,60,dtype=tf.int64))[0]
+                                   num_adapation_steps=tf.cast(num_adapation_steps, dtype=tf.int32),
+                                   target_rate=tf.cast(target_rate, dtype=tf.float64),
+                                   num_samples=tf.cast(num_samples, dtype=tf.int32),
+                                   num_burnin_steps=tf.cast(num_burnin_steps, dtype=tf.int32)
                                    )
-        if sample_params.num_burnin_steps <= sample_params.num_adapation_steps:
-            logging.warn("Number of burnin steps ({}) should be higher than number of adaptation steps ({}).".format(sample_params.num_burnin_steps, sample_params.num_adapation_steps))
+        if num_burnin_steps <= num_adapation_steps:
+            logging.warn("Number of burnin steps ({}) should be higher than number of adaptation steps ({}).".format(num_burnin_steps, num_adapation_steps))
 
 
 
@@ -112,51 +129,49 @@ class FreeTransitionSAEM(object):
 
             target = DTECToGainsSAEM(variables=hyperparams_warmstart)
             target.setup_target(X, Xstar, Y_real, Y_imag, freqs,
-                                     fed_kernel='RBF', obs_type='DDTEC',which_kernel=which_kernel,
+                                     fed_kernel='RBF', obs_type=obs_type,which_kernel=which_kernel,
                                      kernel_params=kernel_params, L=None, full_posterior=True)
 
             with tf.control_dependencies([tf.print("Sampling with m:",target.constrained_hyperparams)]):
 
-                def trace_step(states, previous_kernel_results):
-                    """Trace the transformed dtec, stepsize, log_acceptance, log_prob"""
-                    return previous_kernel_results.extra.step_size_assign, previous_kernel_results.target_log_prob
-                    # dtec_constrained = target.transform_samples(states[0])
-                    # return dtec_constrained, \
-                    #        previous_kernel_results.step_size, \
-                    #        previous_kernel_results.log_acceptance_correction, \
-                    #        previous_kernel_results.target_log_prob
-
                 ###
-                hmc = tfp.mcmc.HamiltonianMonteCarlo(
+                hmc = tfp.mcmc.SimpleStepSizeAdaptation(tfp.mcmc.HamiltonianMonteCarlo(
                     target_log_prob_fn=target.logp,
                     num_leapfrog_steps=sample_params.num_leapfrog_steps,
-                    step_size=self.step_sizes,
-                    step_size_update_fn=tfp.mcmc.make_simple_step_size_update_policy(num_adaptation_steps=sample_params.num_adapation_steps,
-                                                                                     decrement_multiplier=0.1,
-                                                                                     increment_multiplier=0.1,
-                                                                                     target_rate=sample_params.target_rate),
-                    state_gradients_are_stopped=True)
+                    step_size=self.step_sizes),
+                    num_adaptation_steps=sample_params.num_adapation_steps,
+                    target_accept_prob=sample_params.target_rate,
+                    adaptation_rate=0.05)
 
                 # Run the chain (with burn-in maybe).
                 # last state as initial point (mean of each chain)
-                samples, (stepsize, target_log_prob) = tfp.mcmc.sample_chain(
+                # TODO: add trace once working without it
+                # TODO: let noise be a hmc param
+
+                def trace_fn(_, pkr):
+                    # print(pkr)
+                    return (pkr.inner_results.log_accept_ratio,
+                            pkr.inner_results.accepted_results.step_size)
+
+                samples,(log_accept_ratio, step_size) = tfp.mcmc.sample_chain(#(stepsize, target_log_prob)
                     num_results=sample_params.num_samples,
                     num_burnin_steps=sample_params.num_burnin_steps,
-                    trace_fn=trace_step,
-                    return_final_kernel_results=True,
+                    trace_fn=trace_fn,#trace_step,
+                    return_final_kernel_results=False,
                     current_state=[dtec_warmstart],
                     kernel=hmc,
                     parallel_iterations=parallel_iterations)
 
-                next_dtec_warmstart = tf.reduce_mean(samples,axis=0)
+                next_dtec_warmstart = tf.reduce_mean(samples[0],axis=0)
 
                 with tf.control_dependencies([samples[0]]):
                     t1 = timer()
 
 
 
-                # rhat = tfp.mcmc.potential_scale_reduction(samples)
-                # ess = tfp.mcmc.effective_sample_size(samples)
+                rhat = tfp.mcmc.potential_scale_reduction(samples)[0]
+                ess = tfp.mcmc.effective_sample_size(samples)[0]
+
                 flat_samples = flatten_batch_dims(samples[0])
 
                 # test_logp = tf.reduce_mean(target.logp(flat_samples[:,N:]))/tf.cast(Ns,float_type)
@@ -173,11 +188,11 @@ class FreeTransitionSAEM(object):
                 #                                name='marginal_log_likelihood')/tf.cast(N+Ns,float_type)
 
 
-                idx_learn = GetLearnIndices(dist_cutoff=0.3)(X[:,4:7])
+                idx_learn = GetLearnIndices(dist_cutoff=0.3)(X[:,4:7])[0]
                 X_learn = tf.gather(X,idx_learn,axis=0)
                 ddtec_transformed_data = ddtec_transformed[:, :N]
                 ddtec_mean = tf.reduce_mean(ddtec_transformed_data,axis=0)
-                ddtec_var = tf.reduce_mean(tf.square(ddtec_transformed_data)) - tf.square(ddtec_mean)
+                ddtec_var = tf.reduce_mean(tf.square(ddtec_transformed_data), axis=0) - tf.square(ddtec_mean)
                 ddtec_mean = tf.gather(ddtec_mean, idx_learn,axis=0)
                 ddtec_var = tf.gather(ddtec_var, idx_learn,axis=0)
 
@@ -197,6 +212,8 @@ class FreeTransitionSAEM(object):
 
                 next_hyperparams_warmstart = target.stack_state(target.unconstrained_state(
                     target.DTECToGainsParams(target.constrained_hyperparams.y_sigma, *learned_hyperparams)))
+                solved_hyperparams = target.stack_state(target.DTECToGainsParams(target.constrained_hyperparams.y_sigma, *learned_hyperparams))
+                next_hyperparams_warmstart.set_shape(hyperparams_warmstart.shape)
 
                 # self.update_hyperparams = tf.assign(self.hyperparams_var, learned_unconstrained_vars)
                 with tf.control_dependencies([next_hyperparams_warmstart]):
@@ -231,29 +248,36 @@ class FreeTransitionSAEM(object):
         effective_phase = tf.atan2(Y_imag_post[0,:,:], Y_real_post[0,:,:])
 
         Posterior = namedtuple('Solutions', ['tec', 'phase', 'weights_tec'])
-
         data_posterior = Posterior(
             tec = tf.reshape(dtec_post[1,:N], X_dim),
             phase = tf.reshape(effective_phase[:N, :], tf.concat([X_dim, [-1]],axis=0)),
-            weights_tec=tf.reshape(dtec_post[2, :N] - dtec_post[0, :N], X_dim),
+            weights_tec=tf.reshape(tf.square(dtec_post[2, :N] - dtec_post[0, :N]), X_dim),
         )
 
         screen_posterior = Posterior(
             tec=tf.reshape(dtec_post[1, N:], Xstar_dim),
             phase=tf.reshape(effective_phase[N:, :], tf.concat([Xstar_dim, [-1]], axis=0)),
-            weights_tec=tf.reshape(dtec_post[2, N:] - dtec_post[0, N:], Xstar_dim),
+            weights_tec=tf.reshape(tf.square(dtec_post[2, N:] - dtec_post[0, N:]), Xstar_dim),
         )
 
-        FilterResult = namedtuple('FilterResult', ['data_posterior', 'screen_posterior', 'next_dtec_warmstart', 'next_hyperparams_warmstart', 'index', 'next_index', 'cont'])
+        Performance = namedtuple('Performance',['rhat', 'ess', 'log_accept_ratio', 'step_size'])
+
+        FilterResult = namedtuple('FilterResult', ['performance','data_posterior', 'screen_posterior', 'next_dtec_warmstart', 'next_hyperparams_warmstart','solved_hyperparams', 'index', 'next_index', 'mean_time','cont'])
 
 
         output = FilterResult(
+            performance=Performance(rhat = rhat,
+                                    ess = ess,
+                                    log_accept_ratio=log_accept_ratio,
+                                    step_size=step_size),
             data_posterior = data_posterior,
             screen_posterior = screen_posterior,
             next_dtec_warmstart=next_dtec_warmstart,
             next_hyperparams_warmstart=next_hyperparams_warmstart,
+            solved_hyperparams=solved_hyperparams,
             index=index,
             next_index=next_index,
+            mean_time=tf.reduce_mean(X[:,0]),
             cont=cont)
         return output
 
@@ -275,7 +299,7 @@ class FreeTransitionSAEM(object):
             results = self.filter_step(dtec_warmstart,
                              hyperparams_warmstart,
                              num_samples=num_samples,
-                             parallel_iterations=parallel_iterations,
+                             parallel_iterations=int(parallel_iterations),
                              num_leapfrog_steps=num_leapfrog_steps,
                              target_rate=target_rate,
                              num_burnin_steps=num_burnin_steps,
@@ -284,40 +308,59 @@ class FreeTransitionSAEM(object):
                              num_adapation_steps=num_adapation_steps)
 
 
-            store_arrays = [results.data_posterior.tec,
-                            results.data_posterior.phase,
-                            results.data_posterior.weights_tec,
-                            results.screen_posterior.tec,
-                            results.screen_posterior.phase,
-                            results.screen_posterior.weights_tec
-                            ]
+            args = [(results.index, results.next_index,results.data_posterior.tec[None, ...]),
+                    (results.index, results.next_index,results.data_posterior.phase[None, ...]),
+                    (results.index, results.next_index,results.data_posterior.weights_tec[None, ...]),
+                    (results.index, results.next_index,results.screen_posterior.tec[None, ...]),
+                    (results.index, results.next_index,results.screen_posterior.phase[None, ...]),
+                    (results.index, results.next_index,results.screen_posterior.weights_tec[None, ...]),
+                    (results.mean_time,results.solved_hyperparams),
+                    (results.index, results.next_index),
+                    (results.index, results.next_index,results.performance.rhat,results.performance.ess,
+                     results.performance.log_accept_ratio,results.performance.step_size)
+                    ]
 
-            store_dtec_callbacks = [DatapackStoreCallback(self.datapack_feed.datapack,
-                                                          self.datapack_feed.posterior_solset,'tec',
-                                                        **self.datapack_feed.selection),
-                                    DatapackStoreCallback(self.datapack_feed.datapack,
-                                                        self.datapack_feed.posterior_solset, 'phase',
-                                                        **self.datapack_feed.selection),
-                                    DatapackStoreCallback(self.datapack_feed.datapack,
-                                                        self.datapack_feed.posterior_solset, 'weights_tec',
-                                                        **self.datapack_feed.selection),
-                                    DatapackStoreCallback(self.datapack_feed.datapack,
-                                                          self.datapack_feed.screen_solset, 'tec',
-                                                          **self.datapack_feed.selection),
-                                    DatapackStoreCallback(self.datapack_feed.datapack,
-                                                          self.datapack_feed.screen_solset, 'phase',
-                                                          **self.datapack_feed.selection),
-                                    DatapackStoreCallback(self.datapack_feed.datapack,
-                                                          self.datapack_feed.screen_solset, 'weights_tec',
-                                                          **self.datapack_feed.selection)
-                                    ]
-            lock = tf.no_op()
+            callbacks = [DatapackStoreCallback(self.datapack_feed.datapack,
+                                              self.datapack_feed.posterior_solset,'tec',
+                                              (0,2,3,1),#pol,time,dir,ant->pol,dir,ant,time
+                                            **self.datapack_feed.selection),
+                        DatapackStoreCallback(self.datapack_feed.datapack,
+                                              self.datapack_feed.posterior_solset, 'phase',
+                                              (0, 2, 3, 4, 1),  # pol,time,dir,ant,freq->pol,dir,ant,freq,time
+                                              **self.datapack_feed.selection),
+                        DatapackStoreCallback(self.datapack_feed.datapack,
+                                              self.datapack_feed.posterior_solset, 'weights_tec',
+                                              (0, 2, 3, 1),  # pol,time,dir,ant->pol,dir,ant,time
+                                              **self.datapack_feed.selection),
+                        DatapackStoreCallback(self.datapack_feed.datapack,
+                                              self.datapack_feed.screen_solset, 'tec',
+                                              (0, 2, 3, 1),  # pol,time,dir,ant->pol,dir,ant,time
+                                              **self.datapack_feed.selection),
+                        DatapackStoreCallback(self.datapack_feed.datapack,
+                                              self.datapack_feed.screen_solset, 'phase',
+                                              (0, 2, 3, 4, 1),  # pol,time,dir,ant,freq->pol,dir,ant,freq,time
+                                              **self.datapack_feed.selection),
+                        DatapackStoreCallback(self.datapack_feed.datapack,
+                                              self.datapack_feed.screen_solset, 'weights_tec',
+                                              (0, 2, 3, 1),  # pol,time,dir,ant->pol,dir,ant,time
+                                              **self.datapack_feed.selection),
+                        StoreHyperparameters(self.hyperparam_store),
+                        PlotResults(hyperparam_store=self.hyperparam_store,
+                                    datapack=self.datapack_feed.datapack,
+                                    solset=self.datapack_feed.solset,
+                                    posterior_name=self.datapack_feed.posterior_name,
+                                    plot_directory=self.plot_folder,
+                                    **self.datapack_feed.selection),
+                        PlotPerformance(self.output_folder)
+                        ]
+            lock = [tf.no_op()]
             store_ops = []
-            for array, callback in zip(store_arrays, store_dtec_callbacks):
-                with tf.control_dependencies([lock]):
-                    store_ops.append(callback(results.index, results.next_index, array))
+            for arg, callback in zip(args, callbacks):
+                with tf.control_dependencies(lock):
+                    store_ops.append(callback(*arg))
                     lock = store_ops[-1]
-            with tf.control_dependencies([lock]):
+
+            with tf.control_dependencies(lock):
                 return [tf.identity(results.cont), results.next_dtec_warmstart, results.next_hyperparams_warmstart]
 
         def cond(cont, dtec_warmstart, hyperparams_warmstart):
@@ -328,7 +371,7 @@ class FreeTransitionSAEM(object):
         cont, dtec_out, hyperparams_out = tf.while_loop(cond,
                       body,
                       [tf.constant(True), dtec_init, hyperparams_init],
-                      parallel_iterations=num_parallel_filters)
+                      parallel_iterations=int(num_parallel_filters))
 
         return tf.group([cont, dtec_out, hyperparams_out])
 

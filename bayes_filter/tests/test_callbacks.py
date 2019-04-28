@@ -37,7 +37,7 @@ def test_get_learn_indices(tf_session):
     with tf_session.graph.as_default():
         callback = GetLearnIndices(dist_cutoff=0.3)
         indices = callback(tf.convert_to_tensor(Xa, dtype=float_type))
-        indices = tf_session.run(indices)
+        indices = tf_session.run(indices)[0]
     Xa = Xa[indices,:]
     for i in range(Xa.shape[0]):
         assert np.all(np.linalg.norm(Xa[i:i+1,:] - Xa[i+1:,:], axis=1) < 0.3)
@@ -47,5 +47,5 @@ def test_store_hyperparams(tf_session):
         if os.path.exists(os.path.join(TEST_FOLDER,'test_hyperparam_store.npz')):
             os.unlink(os.path.join(TEST_FOLDER,'test_hyperparam_store.npz'))
         callback = StoreHyperparameters(store_file=os.path.join(TEST_FOLDER,'test_hyperparam_store.npz'))
-        size = callback(1000., 1., 2., 3., 4., 5.)
+        size = callback(1000., [0., 1., 2., 3., 4., 5.])
         assert tf_session.run(size)[0] == 1

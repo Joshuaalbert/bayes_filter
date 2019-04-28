@@ -10,6 +10,15 @@ def test_datapack():
     datapack.phase = phase+1.
     phasep1, axes = datapack.phase
     assert np.all(np.isclose(phasep1, phase+1.))
+    datapack.select(ant='RS*', time=slice(0,1,1))
+    phase,axes = datapack.phase
+    for  a in axes['ant']:
+        assert b'RS' in a
+    assert len(axes['ant']) == 14
+    dtec = np.mean(phase,axis=-2)
+    datapack.select(ant='RS*', time=slice(0,1,1),freq=slice(0,1,1))
+    datapack.tec = dtec
+
 
 # def test_datapack():
 #     datapack = DataPack('test.h5',readonly=False)

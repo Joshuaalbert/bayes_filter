@@ -69,6 +69,7 @@ def dict2namedtuple(d, name="Result"):
     return res(**d)
 
 
+# TODO: fix get set
 def graph_store_set(key, value, graph = None, name="graph_store"):
     if isinstance(key,(list,tuple)):
         if len(key) != len(value):
@@ -182,7 +183,7 @@ def make_example_datapack(Nd, Nf, Nt, pols=None, index_n=1, gain_noise=0.05, nam
             coord_feed = CoordinateFeed(time_feed, directions, antennas, coord_map=tf_coord_transform(
                 itrs_to_enu_with_references(antennas[0, :], [up.ra.rad, up.dec.rad], antennas[0, :])))
             init, next = init_feed(coord_feed)
-            kern = DTECIsotropicTimeGeneral(0.17,obs_type=obs_type,b=100.,lengthscales=15.,a=300., timescale=50., kernel_params={'resolution':5})
+            kern = DTECIsotropicTimeGeneral(variance=0.09,lengthscales=15.,b=100.,a=250., timescale=50.,obs_type=obs_type, kernel_params={'resolution':5})
             K = kern.K(next)
             Z = tf.random_normal(shape=tf.shape(K)[0:1],dtype=K.dtype)
             ddtec = tf.matmul(safe_cholesky(K),Z[:,None])[:,0]
@@ -197,6 +198,7 @@ def make_example_datapack(Nd, Nf, Nt, pols=None, index_n=1, gain_noise=0.05, nam
         phase = np.tile(phase[None,...], (Npol,1,1,1,1))#Npol, Nd, Na, Nf, Nt
 
         phase = np.angle(np.exp(1j*phase) + gain_noise * np.random.normal(size=phase.shape))
+        phase -= phase[:,:,0:1,:,:]
 
 
 
@@ -218,8 +220,10 @@ def make_example_datapack(Nd, Nf, Nt, pols=None, index_n=1, gain_noise=0.05, nam
         # if not use_pols:
         #     phase = phase[0, ...]
         #     pols = None
+        dtec = np.mean(phase*freqs[:,None]/8.448e6,axis=-2)
         datapack.add_soltab('phase000', values=phase, ant=antenna_labels, dir = patch_names, time=times[:, 0], freq=freqs, pol=pols)
-        datapack.phase = phase
+        datapack.add_soltab('tec000', values=dtec, ant=antenna_labels, dir = patch_names, time=times[:, 0], pol=pols)
+        # datapack.phase = phase
         return datapack
 
 

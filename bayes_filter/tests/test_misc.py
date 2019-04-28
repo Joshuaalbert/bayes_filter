@@ -1,13 +1,19 @@
 import os
 
-from .common_setup import tf_session, TEST_FOLDER
+from .common_setup import *
 import numpy as np
 import os
 import tensorflow as tf
 
 from bayes_filter import jitter
 from bayes_filter.misc import random_sample, flatten_batch_dims, load_array_file, timer, diagonal_jitter, \
-    log_normal_solve_fwhm,make_example_datapack, maybe_create_posterior_solsets
+    log_normal_solve_fwhm,make_example_datapack, maybe_create_posterior_solsets, graph_store_get,graph_store_set
+
+def test_getset_graph_ops(tf_graph):
+    a = tf.constant(0)
+    graph_store_set('a',a, graph=tf_graph)
+    a_out = graph_store_get('a',tf_graph)
+    assert a == a_out
 
 
 def test_random_sample(tf_session):
@@ -62,7 +68,11 @@ def test_log_normal_solve_fwhm():
     assert np.isclose(mu, 3./2. + 0.5 * (0.5) ** 2)
 
 def test_make_example_datapack():
-    datapack = make_example_datapack(4,2,3,name=os.path.join(TEST_FOLDER,'test_misc.h5'),clobber=True)
+    datapack = make_example_datapack(4,2,2,name=os.path.join(TEST_FOLDER,'test_misc.h5'),clobber=True)
+    assert 'sol000' in datapack.solsets
+    assert 'phase000' in datapack.soltabs
+    assert 'tec000' in datapack.soltabs
+    assert np.any(np.abs(datapack.phase[0])>0)
 
 def test_maybe_create_posterior_solsets():
     datapack = make_example_datapack(4,2,3,name=os.path.join(TEST_FOLDER,'test_misc.h5'),clobber=True)

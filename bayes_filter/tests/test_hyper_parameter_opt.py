@@ -13,7 +13,7 @@ def test_py_function_optimise_hyperparams(tf_session):
     screen_directions = screen_directions,remake_posterior_solsets = False)
     with tf_session.graph.as_default():
         index_feed = IndexFeed(2)
-        datapack_feed = DatapackFeed(index_feed, datapack, {'sol000':'phase'})
+        datapack_feed = DatapackFeed(datapack, {'sol000':'phase'}, index_feed=index_feed)
         init, ((Y_real, Y_imag), freqs, X, Xstar, _, _, _) = init_feed(datapack_feed)
         ddtec = tf.atan2(Y_imag, Y_real)*freqs/-8.448e6
         mean_ddtec = tf.reduce_mean(ddtec,axis=-1,keepdims=True)
