@@ -414,7 +414,7 @@ def flatten_batch_dims(t, num_batch_dims=None):
     """
     shape = tf.shape(t)
     if num_batch_dims is None:
-        num_batch_dims = tf.size(shape) - 1
+        num_batch_dims =  - 1
     out_shape = tf.concat([[-1], shape[num_batch_dims:]],axis=0)
     return tf.reshape(t,out_shape)
 
