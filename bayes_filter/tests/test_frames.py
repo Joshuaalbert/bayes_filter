@@ -1,3 +1,5 @@
+from .common_setup import *
+
 import numpy as np
 from astropy import time as at, coordinates as ac, units as au
 

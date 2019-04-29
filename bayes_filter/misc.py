@@ -124,7 +124,7 @@ def plot_graph(tf_graph,ax=None, filter=False):
     nx.relabel_nodes(G, mapping, copy=False)
     nx.draw(G, cmap = plt.get_cmap('jet'), with_labels = True, ax=ax)
 
-def make_example_datapack(Nd, Nf, Nt, pols=None, index_n=1, gain_noise=0.05, name='test.hdf5', obs_type='DDTEC',clobber=False):
+def make_example_datapack(Nd, Nf, Nt, pols=None, index_n=1, gain_noise=0.05, name='test.hdf5', obs_type='DDTEC',clobber=False, seed=0):
     """
 
     :param Nd:
@@ -142,6 +142,7 @@ def make_example_datapack(Nd, Nf, Nt, pols=None, index_n=1, gain_noise=0.05, nam
     """
     from bayes_filter.feeds import TimeFeed, IndexFeed, CoordinateFeed, init_feed
 
+    np.random.seed(seed)
 
     logging.info("=== Creating example datapack ===")
     name = os.path.abspath(name)

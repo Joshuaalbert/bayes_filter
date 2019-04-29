@@ -273,6 +273,7 @@ class DTECIsotropicTimeGeneral(object):
                 out.append(X[:,s])
             if len(out) == 1:
                 return out[0]
+            print(out)
             return tf.concat(out, axis=1)
 
         # difference with frozen flow is that the time for all rays is independent of ray index

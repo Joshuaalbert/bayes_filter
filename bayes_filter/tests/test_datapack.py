@@ -5,7 +5,7 @@ from ..misc import make_example_datapack
 import os
 
 def test_datapack():
-    datapack = make_example_datapack(4,2,1,["X"],clobber=True, name=os.path.join(TEST_FOLDER,'test_datapack_data.h5'))
+    datapack = make_example_datapack(4,2,1,["X"],obs_type='DTEC',clobber=True, name=os.path.join(TEST_FOLDER,'test_datapack_data.h5'))
     phase,axes = datapack.phase
     datapack.phase = phase+1.
     phasep1, axes = datapack.phase
