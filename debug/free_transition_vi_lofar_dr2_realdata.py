@@ -49,7 +49,8 @@ if __name__ == '__main__':
                                gamma=0.3,
                                stop_patience=5),
             num_mcmc_param_samples_learn=50,
-            num_mcmc_param_samples_infer=50)
+            num_mcmc_param_samples_infer=50,
+        y_sigma=0.1)
 
         logging.info("Initializing the filter")
         sess.run(free_transition.initializer)

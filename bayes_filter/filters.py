@@ -523,7 +523,7 @@ class FreeTransitionVariationalBayes(object):
                 return tf.cast(val, dtype)
             return None
 
-        self._init_y_sigma = tf.convert_to_tensor(y_sigma, float_type, name='y_sigma_init')
+
         sample_params = dict(
                              num_mcmc_param_samples_learn=_maybe_cast(num_mcmc_param_samples_learn, tf.int32),
                              num_mcmc_param_samples_infer=_maybe_cast(num_mcmc_param_samples_infer, tf.int32)
@@ -625,7 +625,8 @@ class FreeTransitionVariationalBayes(object):
                num_parallel_filters=1,
                solver_params=None,
                num_mcmc_param_samples_learn = 1,
-               num_mcmc_param_samples_infer=10
+               num_mcmc_param_samples_infer=10,
+               y_sigma=0.1
                ):
 
         def body(cont, param_warmstart, hyperparams_warmstart, y_sigma):
@@ -725,6 +726,8 @@ class FreeTransitionVariationalBayes(object):
 
         def cond(cont, param_warmstart, hyperparams_warmstart, y_sigma):
             return cont
+
+        self._init_y_sigma = tf.convert_to_tensor(y_sigma, float_type, name='y_sigma_init')
 
         cont, params_out, hyperparams_out, _ = tf.while_loop(cond,
                       body,
