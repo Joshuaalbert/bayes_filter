@@ -490,7 +490,8 @@ class DataPack(object):
                         leaf = soltab_group._v_leaves['weight']
                     else:
                         leaf = soltab_group._v_leaves['val']
-                    # print(tab, selection, value.shape)
+                    # print(tab, selection, value.shape, self._selection)
+
                     leaf.__setitem__(selection, value)
                 else:
                     if not isinstance(value, dict):

@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import tensorflow_probability as tfp
+from . import KERNEL_SCALE
 from .settings import float_type
 from .parameters import Parameter, ScaledPositiveBijector, SphericalToCartesianBijector
 from .quadrature import dblquad
@@ -162,7 +163,7 @@ class DTECIsotropicTimeGeneral(object):
     allowed_obs_type = ['TEC', 'DTEC', 'DDTEC']
 
     def __init__(self, variance=1., lengthscales=10.0,
-                 a=250., b=50.,  timescale=30., ref_location=[0.,0.,0.],
+                 a=250., b=50.,  timescale=30., ref_location=[0.,0.,0.],resolution=3,
                  fed_kernel='RBF', obs_type='TEC', squeeze=True, kernel_params={}):
         if obs_type not in DTECIsotropicTimeGeneral.allowed_obs_type:
             raise ValueError(
@@ -171,7 +172,7 @@ class DTECIsotropicTimeGeneral(object):
         self.squeeze = squeeze
 
         if not isinstance(variance, Parameter):
-            #1e3*1e-16*1e9 = 1e-4
+            # sigma*b = ne / m^3 * b*1e3 m / 1e16 TECU = ne / m^3 * km / 1e10 mTECU
             variance = Parameter(bijector=ScaledPositiveBijector(1.), constrained_value=variance, shape=(-1,1))
         if not isinstance(lengthscales, Parameter):
             lengthscales = Parameter(bijector=ScaledPositiveBijector(10.), constrained_value=lengthscales, shape=(-1,1))
@@ -216,7 +217,7 @@ class DTECIsotropicTimeGeneral(object):
                 length_scale=self.timescale.constrained_value[:,0])
         self.fed_kernel = fed_kernel
         self.time_kernel = time_kernel
-        self.resolution = tf.convert_to_tensor(kernel_params.pop('resolution', 3), tf.int32)
+        self.resolution = tf.convert_to_tensor(resolution, tf.int32)
 
     def _calculate_rays(self, X):
         """
@@ -255,17 +256,9 @@ class DTECIsotropicTimeGeneral(object):
 
         return y, ds
 
-
-    def K(self, X, X2=None):
-        """
-        Calculate the ((D)D)TEC kernel based on the FED kernel.
-
-        :param X: float_type, tf.Tensor (N, 7[10[13]])
-            Coordinates in order (time, kx, ky, kz, x,y,z, [x0, y0, z0, [kx0, ky0, kz0]])
-        :param X2:
-            Second coordinates, if None then equal to X
-        :return:
-        """
+    def _unpack_coords(self,X):
+        if X is None:
+            return None
 
         def bring_together(X, slices):
             out = []
@@ -273,14 +266,13 @@ class DTECIsotropicTimeGeneral(object):
                 out.append(X[:,s])
             if len(out) == 1:
                 return out[0]
-            print(out)
+            # with tf.control_dependencies([tf.print(tf.shape(out), tf.shape(X))]):
             return tf.concat(out, axis=1)
 
         # difference with frozen flow is that the time for all rays is independent of ray index
 
         #N, 1
-        times = X[:,0:1]
-        N = tf.shape(X)[0]
+
         if self.obs_type == 'DTEC':
             X = tf.concat([bring_together(X,[slice(0,7,1)]),#i,alpha
                            bring_together(X,[slice(0,4,1), slice(7,10,1)])],#i0,alpha
@@ -292,8 +284,41 @@ class DTECIsotropicTimeGeneral(object):
                            bring_together(X, [slice(0, 1, 1), slice(10, 13, 1), slice(7, 10, 1)]),  # i0,alpha0
                            ],
                           axis=0)
+        return X
+
+
+    def covariance_and_mean(self, X):
+        X = self._unpack_coords(X)
+        y, ds = self._calculate_rays(X)
+        K = self.K(X, _unpacked=True, rays=(y,ds))#N,N
+        mean = tf.zeros(tf.shape(X)[0:1])#N
+        return K, mean
+
+
+
+    def K(self, X, X2=None, _unpacked = False, rays=None, rays2=None):
+        """
+        Calculate the ((D)D)TEC kernel based on the FED kernel.
+
+        :param X: float_type, tf.Tensor (N, 7[10[13]])
+            Coordinates in order (time, kx, ky, kz, x,y,z, [x0, y0, z0, [kx0, ky0, kz0]])
+        :param X2:
+            Second coordinates, if None then equal to X
+        :return:
+        """
+
+        times = X[:, 0:1]
+        N = tf.shape(X)[0]
+
+        if not _unpacked:
+            X = self._unpack_coords(X)
+
+
         # num_chains, res1, N', 3
-        y1, ds1 = self._calculate_rays(X)
+        if rays is None:
+            y1, ds1 = self._calculate_rays(X)
+        else:
+            y1, ds1 = rays
         shape1 = tf.shape(y1)
         # num_chains, res1 N', 3
         y1 = tf.reshape(y1, tf.concat([shape1[0:1], [-1, 3]], axis=0))
@@ -309,19 +334,24 @@ class DTECIsotropicTimeGeneral(object):
             # Np, 1
             times2 = X2[:, 0:1]
             Np = tf.shape(X2)[0]
-            if self.obs_type == 'DTEC':
-                X2 = tf.concat([bring_together(X2, [slice(0, 7, 1)]),  # i,alpha
-                               bring_together(X2, [slice(0, 4, 1), slice(7, 10, 1)])],  # i0,alpha
-                              axis=0)
-            if self.obs_type == 'DDTEC':
-                X2 = tf.concat([bring_together(X2, [slice(0, 7, 1)]),  # i,alpha
-                               bring_together(X2, [slice(0, 4, 1), slice(7, 10, 1)]),  # i0, alpha
-                               bring_together(X2, [slice(0, 1, 1), slice(10, 13, 1), slice(7, 10, 1)]),  # i0,alpha0
-                               bring_together(X2, [slice(0, 1, 1), slice(10, 13, 1), slice(4, 7, 1)])  # i,alpha0
-                               ],
-                              axis=0)
-            # num_chains, res2, Np', 3
-            y2, ds2 = self._calculate_rays(X2)
+            if not _unpacked:
+                X2 = self._unpack_coords(X2)
+            # if self.obs_type == 'DTEC':
+            #     X2 = tf.concat([bring_together(X2, [slice(0, 7, 1)]),  # i,alpha
+            #                    bring_together(X2, [slice(0, 4, 1), slice(7, 10, 1)])],  # i0,alpha
+            #                   axis=0)
+            # if self.obs_type == 'DDTEC':
+            #     X2 = tf.concat([bring_together(X2, [slice(0, 7, 1)]),  # i,alpha
+            #                    bring_together(X2, [slice(0, 4, 1), slice(7, 10, 1)]),  # i0, alpha
+            #                    bring_together(X2, [slice(0, 1, 1), slice(10, 13, 1), slice(7, 10, 1)]),  # i0,alpha0
+            #                    bring_together(X2, [slice(0, 1, 1), slice(10, 13, 1), slice(4, 7, 1)])  # i,alpha0
+            #                    ],
+            #                   axis=0)
+            if rays2 is None:
+                # num_chains, res2, Np', 3
+                y2, ds2 = self._calculate_rays(X2)
+            else:
+                y2, ds2 = rays2
             shape2 = tf.shape(y2)
             # num_chains, res2 Np', 3
             y2 = tf.reshape(y2, tf.concat([shape2[0:1], [-1, 3]], axis=0))
@@ -351,6 +381,8 @@ class DTECIsotropicTimeGeneral(object):
                                       2 * tf.reduce_sum(K[:, :, :, -1, :], axis=[1]),
                                       2 * tf.reduce_sum(K[:, :, :, 0, :], axis=[1]),
                                       4 * tf.reduce_sum(K[:, 1:-1, :, 1:-1, :], axis=[1, 3])])
+        n = 0
+        result = None
         if self.obs_type == 'TEC':
             n = 1
             result = K_time * I
@@ -367,7 +399,7 @@ class DTECIsotropicTimeGeneral(object):
         if sym:
             result = 0.5 * (tf.transpose(result, (0, 2, 1)) + result)
         #num_chains, N, Np
-        result = self.variance.constrained_value[:,0,None,None]*result
+        result = (tf.square(tf.constant(KERNEL_SCALE, dtype=float_type))*self.variance.constrained_value[:,0,None,None])*result
         if self.squeeze:
             return tf.squeeze(result)
         else:

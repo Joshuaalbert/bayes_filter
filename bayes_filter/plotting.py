@@ -19,6 +19,7 @@ from matplotlib.patches import Polygon, Rectangle
 from matplotlib.collections import PatchCollection
 import matplotlib.colors as colors
 from scipy.spatial import Voronoi
+from . import TEC_CONV
 
 try:
     import cmocean
@@ -311,6 +312,11 @@ class DatapackPlotter(object):
             logging.info(
                 "Applying selection: ant={},time={},freq={},dir={},pol={}".format(ant_sel, time_sel, freq_sel, dir_sel,
                                                                                   pol_sel))
+            self.datapack.select(ant=ant_sel, time=time_sel, freq=freq_sel, dir=None, pol=pol_sel)
+            axes = self.datapack.__getattr__("axes_"+observable)
+            full_patch_names, _ = self.datapack.get_directions(axes['dir'])
+
+
             self.datapack.select(ant=ant_sel, time=time_sel, freq=freq_sel, dir=dir_sel, pol=pol_sel)
             obs, axes = self.datapack.__getattr__(observable)
             if observable.startswith('weights_'):
@@ -335,7 +341,8 @@ class DatapackPlotter(object):
                 freq_labels, freqs = [""], [None]
 
             if tec_eval_freq is not None:
-                obs = obs * -8.4480e6 / tec_eval_freq
+                phase_wrap = True
+                obs = obs * TEC_CONV / tec_eval_freq
 
             if phase_wrap:
                 obs = np.angle(np.exp(1j * obs))
@@ -393,7 +400,8 @@ class DatapackPlotter(object):
         if plot_patchnames:
             annotations = patch_names
         elif plot_facet_idx:
-            annotations = np.array([str(k) for k in range(Nd)])
+            facet_inv_map = [list(full_patch_names).index(ts) for ts in patch_names]
+            annotations = np.array([str(facet_inv_map[k]) for k in range(Nd)])
         else:
             annotations = None
 

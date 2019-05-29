@@ -4,7 +4,7 @@ from . import float_type
 from .misc import flatten_batch_dims, make_coord_array, graph_store_set
 from .datapack import DataPack
 from .settings import dist_type,angle_type
-from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references
+from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references, ITRSToENUWithReferences
 
 
 
@@ -116,6 +116,8 @@ class DatapackFeed(Feed):
         self.index_n = index_n
         self.datapack = datapack
         self.selection = selection
+        self.screen_selection = self.selection.copy()
+        self.screen_selection['dir'] = None #always store all directions of screen
         self.solset = solset
         self.posterior_name = postieror_name
         self.data_map = {solset:'phase'}
@@ -127,6 +129,7 @@ class DatapackFeed(Feed):
             if self.posterior_solset not in self.datapack.solsets:
                 raise ValueError("Posterior solset {} does not exist.".format(self.posterior_solset))
         self._assert_homogeneous_coords()
+        self.index_map = self.create_index_map(solset, self.data_map[solset])
         self.ref_ant = ref_ant
         self.ref_dir = ref_dir
         self.freq_feed, self.time_feed,self.coord_feed, self.star_coord_feed = self.create_coord_and_time_feeds()
@@ -177,6 +180,27 @@ class DatapackFeed(Feed):
                             "{} coords inconsistent in {} {}".format(key,solset,soltab)
                         )
 
+    def create_index_map(self,solset, soltab):
+        selection = self.selection.copy()
+        with self.datapack:
+            self.datapack.current_solset = solset
+            self.datapack.select(**selection)
+            axes = getattr(self.datapack,"axes_"+soltab, None)
+            if axes is None:
+                raise ValueError("{} : {} invalid data map".format(solset, soltab))
+            timestamps, _ = self.datapack.get_times(axes['time'])
+            selection['time'] = None
+            self.datapack.select(**selection)
+            axes = getattr(self.datapack, "axes_" + soltab, None)
+            if axes is None:
+                raise ValueError("{} : {} invalid data map".format(solset, soltab))
+            full_timestamps, _ = self.datapack.get_times(axes['time'])
+
+            inv_map = [list(full_timestamps).index(ts) for ts in timestamps]
+
+
+            return inv_map
+
     def create_coord_and_time_feeds(self):
         solset, soltab = list(self.data_map.items())[0]
         selection = {'ant': None, 'dir': None}
@@ -196,18 +220,14 @@ class DatapackFeed(Feed):
         coord_feed = CoordinateFeed(time_feed,
                                      tf.convert_to_tensor(Xd, dtype=float_type),
                                      tf.convert_to_tensor(Xa, dtype=float_type),
-                                     coord_map=tf_coord_transform(
-                                         itrs_to_enu_with_references(ref_ant, ref_dir, ref_ant)))
-        selection = self.selection.copy()
-        selection['dir'] = None
-        coords = self._get_coords(solset, soltab, selection)
+                                     coord_map=ITRSToENUWithReferences(ref_ant, ref_dir, ref_ant))
+        coords = self._get_coords(solset, soltab, self.screen_selection)
         Xd_screen = coords["Xd"]
         Xa = coords["Xa"]
         starcoord_feed = CoordinateFeed(time_feed,
                                     tf.convert_to_tensor(Xd_screen, dtype=float_type),
                                     tf.convert_to_tensor(Xa, dtype=float_type),
-                                    coord_map=tf_coord_transform(
-                                        itrs_to_enu_with_references(ref_ant, ref_dir, ref_ant)))
+                                    coord_map=ITRSToENUWithReferences(ref_ant, ref_dir, ref_ant))
 
         return freq_feed, time_feed, coord_feed,starcoord_feed
 
@@ -224,15 +244,43 @@ class DatapackFeed(Feed):
         data = tf.py_function(self._get_block, [index, next_index], [float_type]*2)
         return [flatten_batch_dims(d, num_batch_dims=-self.event_size) for d in data]
 
+    def get_initial_point(self):
+        index=0
+        next_index=self.time_feed.index_feed._step
+
+        self.selection['time'] = slice(index, next_index, 1)
+        with self.datapack:
+            G = []
+            for (solset, soltab) in self.data_map.items():
+                self.datapack.current_solset = solset
+                self.datapack.select(**self.selection)
+                val, axes = getattr(self.datapack, soltab)
+                _, freqs = self.datapack.get_freqs(axes['freqs'])
+                if soltab == 'phase':
+                    G.append(np.exp(1j * val))
+                elif soltab == 'amplitude':
+                    G.append(np.abs(val))
+            G = np.prod(G, axis=0)  # Npol, Nd, Na, Nf, Nt
+            G = np.transpose(G[0, ...], (3, 0, 1, 2))  # Nt, Nd, Na, Nf
+            Y_real = np.real(G)
+            Y_imag = np.imag(G)
+            dtec_init = np.arctan2(Y_imag, Y_real)*freqs/-8.448e6
+            dtec_init = np.mean(dtec_init,axis=-1)
+            return dtec_init
+
+
     def _get_block(self, index, next_index):
         index = index.numpy()
         next_index = next_index.numpy()
+        index = self.index_map[index]
+        next_index = self.index_map[next_index-1] +1
         self.selection['time'] = slice(index,next_index,1)
         with self.datapack:
             G = []
             for (solset,soltab) in self.data_map.items():
                 self.datapack.current_solset = solset
                 self.datapack.select(**self.selection)
+
                 val, axes = getattr(self.datapack,soltab)
                 if soltab == 'phase':
                     G.append(np.exp(1j*val))
@@ -301,7 +349,7 @@ class ContinueFeed(Feed):
         self.time_feed = time_feed
         self.continue_feed = time_feed.index_feed.feed.map(self.still_active, num_parallel_calls=self.num_parallel_calls)
         self.feed = self.continue_feed
-        self.num_blocks = tf.cast(tf.ceil(tf.div(tf.cast(self.time_feed.Nt, tf.float32), tf.cast(self.time_feed.slice_size, tf.float32))), tf.int32)
+        self.num_blocks = tf.cast(tf.math.ceil(tf.math.divide(tf.cast(self.time_feed.Nt, tf.float32), tf.cast(self.time_feed.slice_size, tf.float32))), tf.int32)
 
     def still_active(self,index, next_index):
         return tf.less(next_index, self.time_feed.Nt)
@@ -334,15 +382,21 @@ class CoordinateFeed(object):
         :return: float_type, Tensor, [Nt*N0*...*Np, D]
             The returned flattened coordinates
         """
-        return self._make_coord_array(time_slice, *self.coordinates, flat=True)
+        return self._make_coord_array(time_slice, *self.coordinates)
 
-    def _make_coord_array(self, *X, flat=True):
-        X = tf.py_function(lambda *X: make_coord_array(*[x.numpy() for x in X], flat=False),
+    def _make_coord_array(self, *X):
+        def _func(*X):
+            arrays = [x.numpy() for x in X]
+            res = make_coord_array(*arrays, flat=False)
+            return res
+        #Nt, Nd, Na, 6
+        X = tf.py_function(_func,#lambda *X: make_coord_array(*[x.numpy() for x in X]
                               X, float_type)
+
         if self.coord_map is not None:
+            #Nt, Nd, Na, 13
             X = tf.map_fn(self.coord_map, X, back_prop=False)
-        if flat:
-            return flatten_batch_dims(X)
+        X = flatten_batch_dims(X, -1)
         return X
 
 class CoordinateDimFeed(object):
@@ -362,4 +416,4 @@ class CoordinateDimFeed(object):
         """Correct for partial batch dims."""
         N = tf.shape(X)[0]
         N_slice = tf.reduce_prod(self.coord_feed.dims[1:])
-        return tf.concat([[tf.floordiv(N, N_slice)], self.coord_feed.dims[1:]], axis=0)
+        return tf.concat([[tf.math.floordiv(N, N_slice)], self.coord_feed.dims[1:]], axis=0)

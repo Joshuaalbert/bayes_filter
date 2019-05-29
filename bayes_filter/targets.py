@@ -1,322 +1,107 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
-from .kernels import DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
 from .parameters import Parameter, ScaledLowerBoundedBijector
 from collections import namedtuple
-from .misc import log_normal_solve_fwhm, safe_cholesky
+from .misc import sqrt_with_finite_grads
 from .settings import float_type
+from .processes import Process, DTECProcess
+from .misc import random_sample
+from . import TEC_CONV
 import numpy as np
 
 
-class Target(object):
-    def __init__(self, bijectors=None, distributions=None, unconstrained_values=None):
-        for b in bijectors:
-            if not isinstance(b,tfp.bijectors.Bijector):
-                raise ValueError("{} is not a tfp.bijectors.Bijector".format(type(b)))
-        if distributions is None:
-            distributions = [None for _ in bijectors]
-        if len(bijectors) != len(distributions):
-            raise ValueError("length of bijectors and distribution not equal {} {}".format(len(bijectors),len(distributions)))
-        for d in distributions:
-            if d is None:
-                continue
-            if not isinstance(d, tfp.distributions.Distribution):
-                raise ValueError("{} is not a tfp.distributions.Distribution".format(type(d)))
-        if unconstrained_values is not None:
-            self.parameters = [Parameter(bijector=b, distribution=d, unconstrained_value=v) for (b,d,v) in zip(bijectors, distributions,unconstrained_values)]
-        else:
-            self.parameters = [Parameter(bijector=b, distribution=d) for (b, d) in
-                           zip(bijectors, distributions)]
+
+class DTECToGainsSAEM(Process):
 
     @property
-    def get_default_parameters(self):
-        raise NotImplementedError("must subclass")
-
-    @property
-    def bijectors(self):
-        return [p.bijector for p in self.parameters]
-
-    def logp(self,*unconstrained_states):
-        """
-        If the joint distribution of data Y and params M is P(Y,M) then this represents,
-            P(M | Y)
-        and may be unnormalised.
-
-        :param states: List(tf.Tensor)
-            List of starts where first dimension is represents independent realizations.
-            First dimension of each state is size `num_chains`.
-        :return: float_type, tf.Tensor, [num_chains]
-            The log probability of each chain.
-        """
-        raise NotImplementedError("Subclass this.")
-
-
-class DTECToGains(Target):
-    DTECToGainsParams = namedtuple('DTECToGainsParams',
-                                      ['y_sigma', 'variance', 'lengthscales', 'a', 'b', 'timescale'])
-
-    def __init__(self, X, Xstar, Y_real, Y_imag, freqs,
-                 y_sigma=0.2, variance=0.07, lengthscales=10.0,
-                 a=250., b=50., timescale=30.,  fed_kernel = 'RBF', obs_type='DDTEC', num_chains=1, ss=None):
-
-        self.obs_type = obs_type
-        self.fed_kernel = fed_kernel
-        self.num_chains = num_chains
-        self.ss = ss
-
-        kern = DTECIsotropicTimeGeneral(
-            variance=variance,
-            lengthscales=lengthscales,
-            timescale=timescale,
-            a=a,
-            b=b,
-            resolution=3,
-            fed_kernel=self.fed_kernel,
-            obs_type=self.obs_type,
-            squeeze=True)
-
-
-
-        bijectors = [ScaledLowerBoundedBijector(1e-2,y_sigma),
-                     ScaledLowerBoundedBijector(1e-2,variance),
-                     ScaledLowerBoundedBijector(3., lengthscales),
-                     ScaledLowerBoundedBijector(100.,a),
-                     ScaledLowerBoundedBijector(30.,b),
-                     ScaledLowerBoundedBijector(10.,timescale)]
-        distributions = [
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-2, 10., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(1e-4, 10., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(1., 40., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(100, 1000., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(10., 200., 0.5)),
-            tfp.distributions.LogNormal(*log_normal_solve_fwhm(10., 100., 0.5))
-        ]
-
-        super(DTECToGains, self).__init__(bijectors=bijectors, distributions=distributions)
-        #N, ndims
-        self.X = X
-        self.N = tf.shape(self.X)[0]
-        #Ns, ndims
-        self.Xstar = Xstar
-        self.Ns = tf.shape(self.Xstar)[0]
-        self.Xconcat = tf.concat([self.X, self.Xstar],axis=0)
-        self.Nh = tf.shape(self.Xconcat)[0]
-        #N, 1
-        self.Y_real = Y_real
-        #N, 1
-        self.Y_imag = Y_imag
-        #Nf
-        self.freqs = freqs
-
-
-        # N+Ns, N+Ns
-        K = kern.K(self.Xconcat)
-        # with tf.control_dependencies([tf.print("asserting initial K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
-        # N+Ns, N+Ns
-        self.L = safe_cholesky(K)
-
-    def transform_samples(self, y_sigma, variance, lengthscales, a, b, timescale, dtec):
-        """
-        Calculate transformed samples.
-
-        :param y_sigma: float_type tf.Tensor [S, num_chains]
-        :param variance: float_type tf.Tensor [S, num_chains]
-        :param lengthscales: float_type tf.Tensor [S, num_chains]
-        :param a: float_type tf.Tensor [S, num_chains]
-        :param b: float_type tf.Tensor [S, num_chains]
-        :param timescale: float_type tf.Tensor [S, num_chains]
-        :param dtec: float_type tf.Tensor [S, num_chains, M]
-        :return: the unconstrained parameters in a list
-        """
-
-        state = DTECToGains.DTECToGainsParams(
-            *self.constrained_states(y_sigma, variance, lengthscales, a, b, timescale))
-
-        kern = DTECIsotropicTimeGeneral(
-            variance=state.variance,
-            lengthscales=state.lengthscales,
-            timescale=state.timescale,
-            a=state.a,
-            b=state.b,
-            resolution=3,
-            fed_kernel=self.fed_kernel,
-            obs_type=self.obs_type,
-            squeeze=False)
-
-        # num_chains, N+Ns, N+Ns
-        K = kern.K(self.Xconcat)
-        # with tf.control_dependencies([tf.print("asserting final transform K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
-
-        # num_chains, N+Ns, N+Ns
-        L = safe_cholesky(K)
-
-        # transform
-        # num_chains, N+Ns
-        dtec_transformed = tf.matmul(L, dtec[:, :, None])[:, :, 0]
-
-        return state, dtec_transformed
-
-
-    def get_initial_point(self, y_sigma, variance, lengthscales, a, b, timescale, dtec):
-        """
-        Get an initial point from constrained values
-
-        :param y_sigma: float_type tf.Tensor []
-        :param variance: float_type tf.Tensor []
-        :param lengthscales: float_type tf.Tensor []
-        :param a: float_type tf.Tensor []
-        :param b: float_type tf.Tensor []
-        :param timescale: float_type tf.Tensor []
-        :param dtec: float_type tf.Tensor [M]
-        :return: the unconstrained parameters in a list
-        """
-        # with tf.control_dependencies([tf.print(tf.shape(self.L), tf.shape(dtec))]):
-        return self.unconstrained_states(y_sigma, variance, lengthscales, a, b, timescale) \
-                   + [tf.linalg.triangular_solve(self.L, dtec[:, None])[:,0]]
-
-    def forward_equation(self, dtec):
-        """
-        Calculate real and imaginary parts of gains from dtec.
-
-        :param dtec: float_type, Tensor [b0,...,bB]
-            The DTECs
-        :return: float_type, Tensor [b0,...,bB,Nf]
-            Real part
-        :return: float_type, Tensor [b0,...,bB,Nf]
-            Imag part
-        TODO how to specify multiple returns in a tuple
-        """
-        #Nf
-        invfreqs = -8.448e6*tf.reciprocal(self.freqs)
-        #..., Nf
-        phase = dtec[..., None] * invfreqs
-        real_part = tf.cos(phase)
-        imag_part = tf.sin(phase)
-        return real_part, imag_part
-
-    def logp(self, y_sigma, variance, lengthscales, a, b, timescale, dtec):
-        """
-        Calculate the log probability of the gains given a model.
-
-        :param y_sigma: float_type, tf.Tensor, [num_chains]
-            The uncertainty of gain measurements.
-        :param variance: float_type, tf.Tensor, [num_chains]
-            The variance of FED.
-        :param lengthscales: float_type, tf.Tensor, [num_chains]
-            The lengthscales of FED (isotropic)
-        :param a: float_type, tf.Tensor, [num_chains]
-            The mean height of ionosphere layer.
-        :param b: float_type, tf.Tensor, [num_chains]
-            The mean weidth of the ionosphere layer.
-        :param timescale: float_type, tf.Tensor, [num_chains]
-            The timescale of the FED layer variability
-        :param dtec: float_type, tf.Tensor, [num_chains, N+Ns]
-            The differential TEC that model the gains.
-        :return: float_type, tf.Tensor, [num_chains]
-            The log-probability of the data given model.
-        """
-
-        state = DTECToGains.DTECToGainsParams(*self.constrained_states(y_sigma, variance, lengthscales, a, b, timescale))
-
-        kern = DTECIsotropicTimeGeneral(
-            variance=state.variance,
-            lengthscales=state.lengthscales,
-            timescale=state.timescale,
-            a=state.a,
-            b=state.b,
-            resolution=3,
-            fed_kernel=self.fed_kernel,
-            obs_type=self.obs_type,
-            squeeze=False)
-
-        # num_chains, N+Ns, N+Ns
-        K = kern.K(self.Xconcat)
-        # num_chains, N+Ns, N+Ns
-        with tf.control_dependencies(
-                [tf.assert_equal(tf.is_finite(K), True),
-                 tf.print(*[(n, getattr(state,n)) for n in state._fields],*self.ss)]):
-            L = safe_cholesky(K)
-
-        # transform
-        # num_chains, N+Ns
-        dtec_transformed = tf.matmul(L, dtec[:, :, None])[:,:,0]
-
-        #marginal
-        #num_chains, N
-        dtec_marginal = dtec_transformed[:, :self.N]
-        # num_chains, N, Nf
-        g_real, g_imag = self.forward_equation(dtec_marginal)
-        likelihood_real = tfp.distributions.Laplace(loc=g_real, scale=state.y_sigma[:, :, None])
-        likelihood_imag = tfp.distributions.Laplace(loc=g_imag, scale=state.y_sigma[:, :, None])
-        # with tf.control_dependencies([tf.print('logp',
-        #                                        ('g_real', tf.shape(g_real), g_real),
-        #                                        ('y_sigma', tf.shape(y_sigma), y_sigma),
-        #                                        ('Y_real', tf.shape(self.Y_real), self.Y_real))]):
-        # num_chains
-        logp = tf.reduce_sum(likelihood_real.log_prob(self.Y_real[None, :, :]), axis=[1, 2]) + \
-               tf.reduce_sum(likelihood_imag.log_prob(self.Y_imag[None, :, :]), axis=[1, 2])
-
-        # dtec_prior = tfp.distributions.MultivariateNormalDiag(loc=None,scale_identity_multiplier=None)
-        # num_chains
-
-        logdet = tf.reduce_sum(tf.log(tf.matrix_diag_part(L)), axis=1)
-        # dtec_logp = dtec_prior.log_prob(dtec) - logdet
-        dtec_logp = -0.5*tf.reduce_sum(tf.square(dtec),axis=1) - logdet # - 0.5*(self.N+self.Ns)*np.log(2*np.pi)
-
-
-        res = logp + dtec_logp# + sum([p.constrained_prior.log_prob(s) for (p,s) in zip(self.parameters, state)])
-
-        res.set_shape(tf.TensorShape([self.num_chains]))
-        # with tf.control_dependencies(
-        #         [tf.print("logp",tf.shape(res), res)]):
-        return tf.identity(res)
-
-
-
-class DTECToGainsSAEM(Target):
-    DTECToGainsParams = namedtuple('DTECToGainsParams',
-                                      ['y_sigma', 'variance', 'lengthscales', 'a', 'b', 'timescale'])
+    def _Params(self):
+        return namedtuple('DTECToGainsParams',
+                                      ['amp', 'y_sigma', 'dtec', 'dtec_prior'])
 
     def __init__(self,
-                 initial_hyperparams={},
-                 variables=None):
+                 Lp:tf.Tensor,
+                 mp:tf.Tensor,
+                 dtec_process:DTECProcess):
+        """
+        Creates an instance of the target distribution for complex gains modelled by DTEC.
+
+        :param initial_hyperparams: dict
+            The initial parameters for the DTEC process
+        :param variables: float tf.Tensor or None
+            If None then will initialise variables from initial_hyperparams or the default.
+        """
         self._setup = False
 
-        bijectors = DTECToGainsSAEM.DTECToGainsParams(
-            y_sigma=ScaledLowerBoundedBijector(1e-2, 0.2),
-            variance=ScaledLowerBoundedBijector(1e-3, 1.),
-            lengthscales=ScaledLowerBoundedBijector(3., 15.),
-            a=ScaledLowerBoundedBijector(100., 250.),
-            b=ScaledLowerBoundedBijector(10., 100.),
-            timescale=ScaledLowerBoundedBijector(10., 50.))
+        self.dtec_process = dtec_process
 
+        self.Lp = Lp
+
+        self.logdetLp = tf.reduce_sum(tf.math.log(tf.linalg.diag_part(Lp)))
+        self.mp = mp
+
+        def _vec_bijector(m, *L):
+            """
+            Make the appropriate bijector for L.x + m = y
+
+            where x is tf.Tensor of shape [S, N]
+
+            :param L: tf.Tensor
+                lower triangular [N, N]
+            :param m: tf.Tensor
+                mean [N]
+            :return:
+            """
+
+            _L = L[0]
+            for i in range(1,len(L)):
+                _L = tf.matmul(_L, L[i])
+
+            def _forward(x):
+                # ij,sj-> si
+                return tf.matmul(x,_L,transpose_b=True) + m
+
+            def _inverse(y):
+                # ij, sj -> si
+                return tf.transpose(tf.linalg.triangular_solve(_L, tf.transpose(y - m)))
+
+            def _inverse_log_jac(y):
+                logdetjac = [-tf.reduce_sum(tf.math.log(tf.linalg.diag_part(l))) for l in L]
+                return sum(logdetjac)
+
+            return tfp.bijectors.Inline(forward_fn=_forward,
+                                        inverse_fn=_inverse,
+                                        inverse_log_det_jacobian_fn=_inverse_log_jac,
+                                        forward_min_event_ndims=1)
+
+        bijectors = self.Params(
+            amp = tfp.bijectors.Exp(),#ScaledLowerBoundedBijector(0.1, 1.),
+            y_sigma = ScaledLowerBoundedBijector(1e-2, 0.1),
+            #dtec = L.(Lp.y + mp) + m
+            dtec = _vec_bijector(tf.matmul(self.dtec_process.L, mp[:,None])[:,0] + self.dtec_process.m,
+                                 self.dtec_process.L, Lp),
+            dtec_prior = _vec_bijector(mp, Lp)
+            )
         super(DTECToGainsSAEM, self).__init__(bijectors=bijectors, distributions=None, unconstrained_values=None)
 
-        if variables is None:
-            variables = self.init_variables(**initial_hyperparams)
+    @staticmethod
+    def init_variables(num_chains, full_block_size, tf_seed=0):
+        amp_bijector = tfp.bijectors.Exp()#ScaledLowerBoundedBijector(0.1, 1.)
+        y_sigma_bijector = ScaledLowerBoundedBijector(1e-2, 0.1)
+        init_y_sigma = y_sigma_bijector.inverse(
+            tf.random.truncated_normal(mean=tf.constant(0.1, dtype=float_type),
+                                       stddev=tf.constant(0.03, dtype=float_type),
+                                       shape=[num_chains, 1], dtype=float_type, seed=tf_seed))
+        init_amp = amp_bijector.inverse(
+            tf.random.truncated_normal(mean=tf.constant(1., dtype=float_type),
+                                       stddev=tf.constant(0.5, dtype=float_type),
+                                       shape=[num_chains, 1], dtype=float_type, seed=tf_seed))
+        init_dtec = tf.random.truncated_normal(shape=[num_chains, full_block_size], dtype=float_type, seed=tf_seed)
 
-        self.variables = variables
-        self.constrained_hyperparams = self.constrained_state(self.unstack_state(self.variables))
+        return init_amp, init_y_sigma, init_dtec
 
-
-    def setup_target(self,X, Xstar, Y_real, Y_imag, freqs,fed_kernel = 'RBF', obs_type='DDTEC', full_posterior=True, which_kernel = 0,
-                 kernel_params={}, L=None, Nh=None, squeeze=True):
-        self.obs_type = obs_type
-        self.fed_kernel = fed_kernel
+    def setup_target(self,Y_real, Y_imag, freqs,
+                     full_posterior=True):
         self.full_posterior = full_posterior
-        # N, ndims
-        self.X = X
-        self.N = tf.shape(self.X)[0]
-        if Xstar is not None:
-            # Ns, ndims
-            self.Xstar = Xstar
-            self.Ns = tf.shape(self.Xstar)[0]
-            self.Xconcat = tf.concat([self.X, self.Xstar], axis=0)
-        else:
-            self.Xstar = None
-            self.Ns = 0
-            self.Xconcat = self.X
-        self.Nh = tf.shape(self.Xconcat)[0]
         # N, Nf
         self.Y_real = Y_real
         # N, Nf
@@ -324,203 +109,19 @@ class DTECToGainsSAEM(Target):
         # Nf
         self.freqs = freqs
 
-        kern = None
+        self.N = self.dtec_process.N
+        self.Ns = self.dtec_process.Ns
+        self.Nh = self.dtec_process.Nh
 
-        if which_kernel == 0:
-            kern = DTECIsotropicTimeGeneral(
-                variance=self.constrained_hyperparams.variance,
-                lengthscales=self.constrained_hyperparams.lengthscales,
-                timescale=self.constrained_hyperparams.timescale,
-                a=self.constrained_hyperparams.a,
-                b=self.constrained_hyperparams.b,
-                fed_kernel=self.fed_kernel,
-                obs_type=self.obs_type,
-                squeeze=squeeze,
-                kernel_params=kernel_params)
-        if which_kernel == 1:
-            kern = DTECIsotropicTimeGeneralODE(
-                variance=self.constrained_hyperparams.variance,
-                lengthscales=self.constrained_hyperparams.lengthscales,
-                timescale=self.constrained_hyperparams.timescale,
-                a=self.constrained_hyperparams.a,
-                b=self.constrained_hyperparams.b,
-                fed_kernel=self.fed_kernel,
-                obs_type=self.obs_type,
-                squeeze=squeeze,
-                ode_type='fixed',
-                kernel_params=kernel_params)
-        if which_kernel == 2:
-            kern = DTECIsotropicTimeGeneralODE(
-                variance=self.constrained_hyperparams.variance,
-                lengthscales=self.constrained_hyperparams.lengthscales,
-                timescale=self.constrained_hyperparams.timescale,
-                a=self.constrained_hyperparams.a,
-                b=self.constrained_hyperparams.b,
-                fed_kernel=self.fed_kernel,
-                obs_type=self.obs_type,
-                squeeze=squeeze,
-                ode_type='adaptive',
-                kernel_params=kernel_params)
+        # [1]
+        self.logdetLp = tf.reduce_sum(tf.math.log(tf.linalg.diag_part(self.Lp)), axis=-1, keepdims=True)
 
-        # kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(tf.convert_to_tensor(0.04,float_type), tf.convert_to_tensor(10.,float_type))
+        # dtec        = L.x + m (reparameterisation of prior)
+        # x           = Lp.y + mp (decorrelation of posterior)
+        # dtec        = L.(Lp.y + mp) + m
 
-        # (batch), N+Ns, N+Ns
-        # with tf.control_dependencies([tf.print(tf.shape(X), tf.shape(Xstar), tf.shape(self.Xconcat))]):
-        K = kern.K(self.Xconcat)
-        self.K = K
-        # K = kern.matrix(self.Xconcat[:, 4:7],self.Xconcat[:, 4:7])
-        # with tf.control_dependencies([tf.print("asserting initial K finite"), tf.assert_equal(tf.reduce_all(tf.is_finite(K)), True)]):
-        # N+Ns, N+Ns
-        with tf.control_dependencies([tf.print(tf.shape(K))]):
-            self.L = safe_cholesky(K)
-        # if squeeze:
-        #     L_new.set_shape(tf.TensorShape([Nh, Nh]))
-        # else:
-        #     L_new.set_shape(tf.TensorShape([None, Nh, Nh]))
-        # if L is None:
-        #     self.L = L_new
-        # else:
-        #     # requires Nh given.
-        #     # TODO: provide a new signal for when to recalculate L
-        #     self.L = tf.cond(tf.equal(tf.shape(L)[-1], self.Nh), lambda: L, lambda: L_new)
 
         self._setup = True
-
-    @property
-    def setup(self):
-        return self._setup
-
-    @property
-    def get_default_parameters(self):
-        return DTECToGainsSAEM.DTECToGainsParams(y_sigma=0.1,variance=0.1, lengthscales=15., a=250., b=100., timescale=100.)
-
-    def init_variables(self, **initial_hyperparams):
-        #makes a namedtuple
-        initial_hyperparams = self.get_default_parameters._replace(**initial_hyperparams)
-        initial_hyperparams = initial_hyperparams._replace(
-            **{k:tf.convert_to_tensor(v, dtype=float_type) for k,v in initial_hyperparams._asdict().items()})
-
-        bijectors = self.bijectors
-
-        unconstrained_vars = DTECToGainsSAEM.DTECToGainsParams(
-            *[tf.reshape(b.inverse(v), (-1,1)) for (b, v) in zip(bijectors, initial_hyperparams)])
-        variables = tf.get_variable('state_vars', initializer=self.stack_state(unconstrained_vars))
-
-        return variables
-
-    def unstack_state(self,state):
-        return DTECToGainsSAEM.DTECToGainsParams(
-            *[tf.reshape(state[..., i:i + 1], (-1, 1)) for i in
-              range(len(self.parameters))])
-
-    def stack_state(self,state):
-        return tf.concat(state, axis=-1)
-
-    def unconstrained_state(self, state):
-        """
-        Gets the unconstrained state from tuple of constrained states
-        :param state:
-        :return:
-        """
-        return DTECToGainsSAEM.DTECToGainsParams(*[self.parameters[i].bijector.inverse(state[i]) for i in range(len(self.parameters))])
-
-
-    def constrained_state(self, state):
-        """
-        Gets the constrained state from typle of unconstrained states
-        :param state:
-        :return:
-        """
-        return DTECToGainsSAEM.DTECToGainsParams(*[self.parameters[i].bijector.forward(state[i]) for i in range(len(self.parameters))])
-
-    # def unconstrained_states(self, *states):
-    #     # with tf.control_dependencies([tf.print("constrained_states -> ",*[(tf.shape(s),s) for s in states])]):
-    #     return [b.inverse(s) for (s,b) in zip(states, self.bijectors)]
-    #
-    # def constrained_states(self, *unconstrained_states):
-    #     # with tf.control_dependencies([tf.print("unconstrained_states -> ",*[(tf.shape(s),s) for s in unconstrained_states])]):
-    #     print(unconstrained_states)
-    #     return [b.forward(s) for (s,b) in zip(unconstrained_states, self.bijectors)]
-
-    def transform_samples(self, dtec):
-        """
-        Calculate transformed samples.
-
-        :param dtec: float_type tf.Tensor [S, M]
-        :return: the unconstrained parameters in a list
-        """
-
-        # transform
-        # S, N+Ns
-        # TODO: wrong shape
-        dtec_transformed = tf.matmul(dtec, self.L, transpose_b=True)#tf.einsum("ab,sb->sa",self.L, dtec)
-
-        return dtec_transformed
-
-    def logp_dtec(self, constrained_dtec, dtec_variance):
-        """
-        Calculate log N[dtec | 0, L L^T] = -0.5*(B dtec)^T L^-T L^-1 B dtec - |L| - 0.5*D*log(2*pi)
-
-        :param constrained_dtec: float_type, tf.Tensor [M]
-        :param dtec_variance: float_type, tf.Tensor [M]
-        :return: float_type, tf.Tensor, [batch_size]
-        """
-
-        num_dims = tf.cast(tf.shape(constrained_dtec)[0], float_type)
-
-        # (batch), M, M
-        L = safe_cholesky(self.K + tf.matrix_diag(dtec_variance))
-        # (batch), M, 1
-        constrained_dtec = tf.broadcast_to(constrained_dtec, tf.shape(L)[:-1])[...,None]
-        # (batch), M
-        alpha = tf.matrix_triangular_solve(L, #tf.eye(tf.shape(constrained_dtec)[0], dtype=float_type)*dtec_variance,
-                                           constrained_dtec,lower=True)[..., 0]
-        #(batch)
-        logp = - 0.5 * tf.reduce_sum(tf.square(alpha),axis=-1)
-        #scalar
-        logp -= 0.5 * num_dims * np.log(2 * np.pi)
-        #(batch)
-        logp -= tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)), axis=-1)
-        return logp
-
-    def logp_params(self, variables):
-        state = self.constrained_state(variables)
-        return sum([tf.reduce_mean(p.constrained_prior.log_prob(s)) for (p, s) in zip(self.parameters, state)])
-
-    def logp_gains(self, constrained_dtec):
-        """
-        Get log Prob(gains | dtec)
-
-        :param constrained_dtec: float_type, tf.Tensor, [S, M]
-            Cosntrained dtec
-        :return: float_type, tf.Tensor, scalar
-            The log probability
-        """
-        # marginal
-        # S, N
-        dtec_marginal = constrained_dtec[:, :self.N]
-        # S, N, Nf
-        g_real, g_imag = self.forward_equation(dtec_marginal)
-        likelihood_real = tfp.distributions.Laplace(loc=g_real, scale=self.constrained_hyperparams.y_sigma[:, :, None])
-        likelihood_imag = tfp.distributions.Laplace(loc=g_imag, scale=self.constrained_hyperparams.y_sigma[:, :, None])
-
-        # S
-        logp = tf.reduce_sum(likelihood_real.log_prob(self.Y_real[None, :, :]), axis=[1, 2]) + \
-               tf.reduce_sum(likelihood_imag.log_prob(self.Y_imag[None, :, :]), axis=[1, 2])
-
-        return logp
-
-    def get_initial_point(self, dtec):
-        """
-        Get an initial point from constrained values
-
-        :param dtec: float_type tf.Tensor [M]
-            the constrained dtec
-        :return: float_type tf.Tensor [M]
-            the unconstrained dtec
-        """
-        # with tf.control_dependencies([tf.print(tf.shape(self.L), tf.shape(dtec))]):
-        return tf.linalg.triangular_solve(self.L, dtec[:, None])[:,0]
 
     def forward_equation(self, dtec):
         """
@@ -528,48 +129,275 @@ class DTECToGainsSAEM(Target):
 
         :param dtec: float_type, Tensor [b0,...,bB]
             The DTECs
-        :return: float_type, Tensor [b0,...,bB,Nf]
-            Real part
-        :return: float_type, Tensor [b0,...,bB,Nf]
-            Imag part
-        TODO how to specify multiple returns in a tuple
+        :returns: tuple
+            float_type, tf.Tensor [b0,...,bB,Nf] Real part
+            float_type, tf.Tensor [b0,...,bB,Nf] Imag part
         """
         #Nf
-        invfreqs = -8.448e6*tf.reciprocal(self.freqs)
+        invfreqs = TEC_CONV*tf.math.reciprocal(self.freqs)
         #..., Nf
         phase = dtec[..., None] * invfreqs
         real_part = tf.cos(phase)
         imag_part = tf.sin(phase)
         return real_part, imag_part
 
-    def logp(self, dtec):
+    def log_prob_gains(self, constrained_params):
+        """
+        Get log Prob(gains | dtec)
+
+        :param constrained_y_sigma: float, tf.Tensor
+            y_sigma [num_samples, 1]
+        :param constrained_dtec: float_type, tf.Tensor, [S, M]
+            Cosntrained dtec
+        :return: float_type, tf.Tensor, scalar
+            The log probability
+        """
+        # marginal
+        # S, N
+        dtec_marginal = constrained_params.dtec[:, :self.N]
+        # S, N, Nf
+        g_real, g_imag = self.forward_equation(dtec_marginal)
+        likelihood_real = tfp.distributions.Laplace(loc=g_real, scale=constrained_params.y_sigma[:, :, None])
+        likelihood_imag = tfp.distributions.Laplace(loc=g_imag, scale=constrained_params.y_sigma[:, :, None])
+
+        # S
+        logp = tf.reduce_sum(likelihood_real.log_prob(self.Y_real[None, :, :]), axis=[1, 2]) + \
+               tf.reduce_sum(likelihood_imag.log_prob(self.Y_imag[None, :, :]), axis=[1, 2])
+
+        return logp
+
+    def log_prob(self, amp, y_sigma, dtec):
         """
         Calculate the log probability of the gains given a model.
 
-        :param dtec: float_type, tf.Tensor, [num_chains, N+Ns]
-            The differential TEC that model the gains.
+        :param amp: float_type tf.Tensor [num_chains, 1]
+            Unconstrained amp
+        :param y_sigma: float_type tf.Tensor [num_chains, 1]
+            Unconstrained y_sigma
+        :param dtec: float_type tf.Tensor [num_chains, N+Ns]
+            Unconstrained dtec
+
         :return: float_type, tf.Tensor, [num_chains]
             The log-probability of the data given model.
         """
         if not self.setup:
             raise ValueError("setup is not complete, must run setup_target")
 
-        # transform
-        # num_chains, N+Ns
-        dtec_transformed = self.transform_samples(dtec)#tf.einsum('ab,nb->na',self.L, dtec)
+        unconstrained_params = self.Params(amp=amp, #[num_chains, 1]
+                             y_sigma=y_sigma, #[num_chains,1]
+                             dtec=dtec, #[num_chains,N+Ns]
+                             dtec_prior=dtec) #[num_chains,N+Ns]
 
-        #marginal logprob
-        # num_chains
-        logp = self.logp_gains(dtec_transformed)
-        #[1]
-        logdet = tf.reduce_sum(tf.log(tf.matrix_diag_part(self.L)), axis=-1, keepdims=True)
-        # num_chains
-        dtec_logp = -0.5*tf.reduce_sum(tf.square(dtec),axis=1) - logdet - 0.5*tf.cast(self.N+self.Ns, float_type)*np.log(2*np.pi)
+        constrained_params = self.constrained_state(unconstrained_params)
+        constrained_params = constrained_params._replace(dtec=constrained_params.amp * constrained_params.dtec)
 
-        #print(logp, dtec_logp)
+        # dtec        = L.x + m
+        # x           = Lp.y + mp
+        # dtec        = L.(Lp.y + mp) + m
+        # P(dtec)        = P(y) | ddtec/dy |^(-1)
+        # N[m, L.L^T] |L||Lp| = P(y)
+        # log P(y) = -1/2 (L.(Lp.y + mp) + m - m)^T L^-T L^-1 (L.(Lp.y + mp) + m - m) - D/2log(2pi) - log(|L|) + log(|L|) + log(|Lp|)
+        #          = -1/2 ((Lp.y + mp))^T ((Lp.y + mp)) - D/2log(2pi) + log(|Lp|)
+
+        # num_chains
+        log_prob_gains = self.log_prob_gains(constrained_params)
+
+        # num_chains
+        log_prob_dtec_prior = -0.5*tf.reduce_sum(tf.square(constrained_params.dtec_prior),axis=1) + self.logdetLp - 0.5*tf.cast(self.N+self.Ns, float_type)*np.log(2*np.pi)
+
+        #num_chains
+        log_prob_y_sigma_prior = tf.reduce_sum(tfp.distributions.Normal(loc=tf.constant(0.1,dtype=float_type),
+                                                    scale=tf.constant(0.05,dtype=float_type)).log_prob(
+                                    constrained_params.y_sigma), axis=-1)
+
+        # num_chains
+        log_prob_amp_prior = tf.reduce_sum(tfp.distributions.Normal(loc=tf.constant(1.0, dtype=float_type),
+                                                                        scale=tf.constant(0.75,
+                                                                                          dtype=float_type)).log_prob(
+            constrained_params.amp), axis=-1)
+
+        # log_prob_amp = tfp.distributions.Normal(loc=tf.constant(0.1, dtype=float_type),
+        #                                             scale=tf.constant(0.05, dtype=float_type)).log_prob(
+        #     constrained_params.amp)
         if self.full_posterior:
-            res = logp + dtec_logp# + sum([p.constrained_prior.log_prob(s) for (p,s) in zip(self.parameters, state)])
+            res = log_prob_gains + log_prob_dtec_prior + log_prob_y_sigma_prior + log_prob_amp_prior
         else:
-            res = logp
+            res = log_prob_gains
 
         return res
+
+
+class DTECToGainsTarget(object):
+
+    @property
+    def Params(self):
+        return namedtuple('DTECToGainsParams',
+                                      ['amp', 'y_sigma', 'dtec'])
+
+    def __init__(self,
+                 dtec_process:DTECProcess):
+        """
+        Creates an instance of the target distribution for complex gains modelled by DTEC.
+
+        :param initial_hyperparams: dict
+            The initial parameters for the DTEC process
+        :param variables: float tf.Tensor or None
+            If None then will initialise variables from initial_hyperparams or the default.
+        """
+        self._setup = False
+
+        self.dtec_process = dtec_process
+
+    @staticmethod
+    def init_variables(num_chains, full_block_size, tf_seed=0):
+        """
+        Get initial variables for the target.
+
+        :param num_chains:
+        :param full_block_size:
+        :param tf_seed:
+        :return:
+        """
+
+        init_y_sigma = tf.math.log(
+            tf.random.uniform(shape=[num_chains, 1],
+                              minval=tf.constant(0.05, dtype=float_type),
+                              maxval=tf.constant(0.15, dtype=float_type),
+                               dtype=float_type, seed=tf_seed))
+        init_amp = tf.math.log(
+            tf.random.uniform(shape=[num_chains, 1],
+                              minval=tf.constant(0.5, dtype=float_type),
+                              maxval=tf.constant(3., dtype=float_type),
+                               dtype=float_type, seed=tf_seed))
+        init_dtec = 0.3*tf.random.truncated_normal(shape=[num_chains, full_block_size], dtype=float_type, seed=tf_seed)
+
+        return init_amp, init_y_sigma, init_dtec
+
+    def setup_target(self,Y_real, Y_imag, freqs,
+                     full_posterior=True):
+        """
+        Taken from the instatiation to allow cacheing.
+
+        :param Y_real:
+        :param Y_imag:
+        :param freqs:
+        :param full_posterior:
+        :return:
+        """
+        self.full_posterior = full_posterior
+        # N, Nf
+        self.Y_real = Y_real
+        # N, Nf
+        self.Y_imag = Y_imag
+        # Nf
+        self.freqs = freqs
+
+        # Nf
+        self.invfreqs = TEC_CONV * tf.math.reciprocal(self.freqs)
+
+        self.N = self.dtec_process.N
+        self.Ns = self.dtec_process.Ns
+        self.Nh = self.dtec_process.Nh
+
+        self.L_data = self.dtec_process.L[:self.N, :]
+        self.L = self.dtec_process.L
+
+        self._setup = True
+
+    def transform_state(self,log_amp, log_y_sigma, f, data_only=False):
+        """
+        Transform the input state into constrained variables.
+
+        :param log_amp:
+            [S, 1]
+        :param log_y_sigma:
+            [S, 1]
+        :param f:
+            [S, N]
+        :returns: tuple of
+            tf.Tensor [S, 1]
+            tf.Tensor [S, 1]
+            tf.Tensor [S, N]
+        """
+        y_sigma = tf.exp(log_y_sigma)
+        amp = tf.exp(log_amp)
+        if data_only:
+            # L_ij f_sj -> f_sj L_ji
+            dtec = amp * tf.matmul(f, self.L_data, transpose_b=True)
+        else:
+            # L_ij f_sj -> f_sj L_ji
+            dtec = amp * tf.matmul(f, self.L, transpose_b=True)
+
+        return self.Params(amp=amp, y_sigma=y_sigma, dtec=dtec)
+
+
+    def forward_equation(self, dtec):
+        """
+        Calculate real and imaginary parts of gains from dtec.
+
+        :param dtec: float_type, Tensor [b0,...,bB]
+            The DTECs
+        :returns: tuple
+            float_type, tf.Tensor [b0,...,bB,Nf] Real part
+            float_type, tf.Tensor [b0,...,bB,Nf] Imag part
+        """
+        #..., Nf
+        phase = dtec[..., None] * self.invfreqs
+        real_part = tf.cos(phase)
+        imag_part = tf.sin(phase)
+        return real_part, imag_part
+
+    def log_prob(self, log_amp, log_y_sigma, f):
+        """
+        Calculate the log probability of the gains given a model.
+
+        :param amp: float_type tf.Tensor [num_chains, 1]
+            Unconstrained amp
+        :param y_sigma: float_type tf.Tensor [num_chains, 1]
+            Unconstrained y_sigma
+        :param dtec: float_type tf.Tensor [num_chains, N+Ns]
+            Unconstrained dtec
+
+        :return: float_type, tf.Tensor, [num_chains]
+            The log-probability of the data given model.
+        """
+        # num_chains = tf.shape(f)[0]
+        # shuffle = tf.random.shuffle(tf.range(num_chains))
+        # log_y_sigma = tf.gather(log_y_sigma, shuffle, axis=0)
+        # log_amp = tf.gather(log_amp, shuffle, axis=0)
+        # f = tf.gather(f, shuffle, axis=0)
+        # print('f',f)
+
+        #TODO: once working try with only data prior
+        transformed = self.transform_state(log_amp, log_y_sigma, f, data_only=True)
+
+        # num_chains
+        prior = tfp.distributions.MultivariateNormalDiag(loc=tf.zeros_like(f),
+                                                         scale_identity_multiplier=1.).log_prob(f)
+
+        # phase_model = transformed.dtec[:,:,None]*self.invfreqs
+        # Yimag_model = tf.sin(phase_model)
+        # Yreal_model = tf.cos(phase_model)
+        #TODO: do slicing on L first reduce complexity
+        Yreal_model, Yimag_model = self.forward_equation(transformed.dtec)
+
+        likelihood = -tf.math.reciprocal(transformed.y_sigma[:, :, None]) * sqrt_with_finite_grads(
+            tf.math.square(self.Y_imag[None, :, :] - Yimag_model) + tf.math.square(
+                self.Y_real[None, :, :] - Yreal_model)) - log_y_sigma[:, :, None]
+
+        # # num_chains, N, Nf
+        # likelihood = tfp.distributions.Laplace(loc=self.Y_imag[None, :, :], scale=transformed.y_sigma[:, :, None]).log_prob(
+        #     Yimag_model) \
+        #              + tfp.distributions.Laplace(loc=self.Y_real[None, :, :], scale=transformed.y_sigma[:, :, None]).log_prob(
+        #     Yreal_model)
+
+        #num_chains
+        y_sigma_prior = tfp.distributions.Normal(
+            loc=tf.constant(0.1, dtype=float_type), scale=tf.constant(0.1, dtype=float_type)).log_prob(transformed.y_sigma[:, 0])
+
+        # num_chains
+        logp = tf.reduce_sum(likelihood, axis=[1, 2]) + prior
+        # + y_sigma_prior
+        # print('logp',logp)
+
+        return logp

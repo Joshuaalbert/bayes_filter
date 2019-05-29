@@ -2,7 +2,6 @@
 This file contains the code to use gpflow to optimise the kernel hyperparameters of D(D)TEC data.
 We use a global concensus model to speed things up.
 """
-from bayes_filter import float_type
 from bayes_filter.callbacks import Callback
 
 from .kernels import DTECIsotropicTimeGeneral
@@ -10,6 +9,8 @@ from .misc import safe_cholesky
 
 import tensorflow as tf
 import gpflow as gp
+import numpy as np
+
 
 from gpflow import transforms
 from gpflow import settings
@@ -179,6 +180,9 @@ class KernelHyperparameterSolveCallback(Callback):
 
             # print(var_dtec)
 
+            logging.info("Hyper parameter optimisation with maxiter={}".format(maxiter))
+            logging.info("Initial hyperparams: variance {}, lengthscale {}, a {}, b {}, timescale {}".format(init_variance, init_lengthscales, init_a, init_b, init_timescale))
+
             with tf.Session(graph=tf.Graph()) as sess:
                 kern = DTECKernel(13,
                                 variance=init_variance.reshape(()),
@@ -190,6 +194,7 @@ class KernelHyperparameterSolveCallback(Callback):
                                 fed_kernel=fed_kernel,
                                 obs_type=obs_type)
                                 # **states)
+                kern.variance.trainable = False
 
                 # kern = DTECKernel(13,
                 #                   resolution=resolution,
@@ -197,11 +202,14 @@ class KernelHyperparameterSolveCallback(Callback):
                 #                   obs_type=obs_type)
                 # **states)
 
-                m = GPRCustom(X, mean_dtec[:,None], var_dtec[None,:], kern)
+                m = gp.models.GPR(X, mean_dtec[:,None], kern=kern)#GPRCustom(X, mean_dtec[:,None], var_dtec[None,:], kern)
 
                 m.likelihood.variance.trainable = False
+                m.likelihood.variance = var_dtec.mean()
 
                 gp.train.ScipyOptimizer().minimize(m,maxiter=maxiter)
+                # gp.train.AdamOptimizer(1e-3).minimize(m,maxiter=maxiter)
+
                 logging.info("Final loglikelihood: {}".format(m.compute_log_likelihood()/X.shape[0]))
 
                 variance = kern.variance.value.reshape(init_variance.shape)
@@ -211,7 +219,31 @@ class KernelHyperparameterSolveCallback(Callback):
                 timescale = kern.timescale.value.reshape(init_timescale.shape)
 
             result = [variance, lengthscales, a, b, timescale]
-            print(result)
+
+            logging.info(
+                "Final hyperparams: variance {}, lengthscale {}, a {}, b {}, timescale {}".format(variance, lengthscales, a, b, timescale))
+
             return result
 
         return optimise_hyperparams
+
+def optimize_hypercube(X, mean_dtec, var_dtec, init_variance, init_lengthscales, init_a, init_b, init_timescale,resolution=8, maxiter=100,obs_type='DDTEC', fed_kernel='RBF'):
+
+    deltas = {'lengthscales':0.5,
+              'a':10.,
+              'b':10.,
+                'timescale':10.,
+                'variance':0.5**2}
+    minmax = {'lengthscales':(5., 25.),
+              'a':(100., 500.),
+              'b':(50., 200.),
+              'timescale':(20., 150.)}
+    delta_lengthscales = tf.constant(0.5, dtype=float_type)
+    delta_a = tf.constant(10., dtype=float_type)
+    delta_b = tf.constant(10., dtype=float_type)
+    delta_timescales = tf.constant(10., dtype=float_type)
+
+    start_lengthscales = init_lengthscales  - tf.constant(0.5, dtype=float_type)
+    start_a = init_a - delta_a
+    start_b = tf.constant(10., dtype=float_type)
+    start_timescales = tf.constant(10., dtype=float_type)
