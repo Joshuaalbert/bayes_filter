@@ -578,8 +578,8 @@ class FreeTransitionVariationalBayes(object):
         Yreal_data = tf.math.cos(phase_data)
         Yimag_data = tf.math.sin(phase_data)
         next_y_sigma = 0.5 * tf.reduce_mean(
-            tf.math.abs(Yreal - tf.reduce_mean(Yreal_data, 50., axis=[0, 1]))) + 0.5 * tf.reduce_mean(
-            tf.math.abs(Yimag - tf.reduce_mean(Yimag_data, 50., axis=[0, 1])))
+            tf.math.abs(Yreal - tf.reduce_mean(Yreal_data, axis=[0, 1]))) + 0.5 * tf.reduce_mean(
+            tf.math.abs(Yimag - tf.reduce_mean(Yimag_data, axis=[0, 1])))
         eff_phase_data = tf.math.atan2(tf.reduce_mean(Yimag_data, axis=[0, 1]), tf.reduce_mean(Yreal_data, axis=[0, 1]))
 
         Yreal_screen = tf.math.cos(phase_screen)
