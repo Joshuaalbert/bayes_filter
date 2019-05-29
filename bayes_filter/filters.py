@@ -545,7 +545,7 @@ class FreeTransitionVariationalBayes(object):
                 solver_params=solver_params,
                 parallel_iterations=parallel_iterations)
             # num_hyperparams, 6
-            solved_hyperparams = (amp, lengthscales, a, b, timescale, y_sigma)
+            solved_hyperparams = (amp, lengthscales, a, b, timescale)
 
         def _posterior(t):
             """
