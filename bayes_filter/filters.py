@@ -485,7 +485,7 @@ class FreeTransitionVariationalBayes(object):
 
         white_dtec_posterior_temp = WhitenedVariationalPosterior(self.datapack_feed.coord_feed.N)
         self.init_params = white_dtec_posterior_temp.initial_variational_params()
-        self.init_hyperparams = (tfp.distributions.softplus_inverse(tf.ones((1,6), float_type)),)
+        self.init_hyperparams = (tfp.distributions.softplus_inverse(tf.ones((1,5), float_type)),)
 
         self.datapack_feed_iterator = tf.data.Dataset.zip((self.datapack_feed.index_feed.feed, self.datapack_feed.feed)).make_initializable_iterator()
 
