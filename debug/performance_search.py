@@ -38,7 +38,7 @@ if __name__ == '__main__':
             free_transition.init_filter(init_kern_hyperparams={'y_sigma':0.1,'variance':0.09,'lengthscales':15., 'a':250., 'b':100., 'timescale':50.},
                                         initial_stepsize=5e-3)
 
-            filter_op = free_transition.filter(num_chains=1,
+            filter_op = free_transition.filter(num_chains=2,
                                              num_samples=4e3,
                                              parallel_iterations=10,
                                              num_leapfrog_steps=num_leapfrog_steps,
