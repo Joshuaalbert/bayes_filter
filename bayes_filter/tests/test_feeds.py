@@ -1,8 +1,14 @@
 from .common_setup import *
 from bayes_filter.datapack import DataPack
+from ..kernels import DTECIsotropicTimeGeneral
+from .. import TEC_CONV
 from bayes_filter.feeds import IndexFeed, init_feed, TimeFeed, ContinueFeed, CoordinateFeed, DataFeed, \
     CoordinateDimFeed, DatapackFeed, FreqFeed
-from ..misc import make_example_datapack, maybe_create_posterior_solsets
+from ..misc import make_example_datapack, maybe_create_posterior_solsets, make_coord_array
+from ..coord_transforms import itrs_to_enu_with_references
+import astropy.time as at
+import astropy.coordinates as ac
+import astropy.units as au
 
 def test_freq_feed(tf_session):
     with tf_session.graph.as_default():
@@ -73,7 +79,7 @@ def test_coord_feed(tf_session, time_feed):
         init, next = init_feed(coord_feed)
         tf_session.run(init)
         out,N,slice_size = tf_session.run([next, coord_feed.N, coord_feed.slice_size])
-        assert out.shape[0] == slice_size*50*5
+        assert out.shape == (slice_size*50*5, 3)
 
 
 def test_data_feed(tf_session, index_feed):
@@ -121,8 +127,10 @@ def test_coord_dim_feed(tf_session):
 
 
 def test_datapack_feed(tf_session):
+
     with tf_session.graph.as_default():
-        datapack = make_example_datapack(10, 2, 10, pols=['XX'],clobber=True, name=os.path.join(TEST_FOLDER,'test_feed_data.h5'))
+        res = make_example_datapack(4, 2, 2, pols=['XX'],clobber=True, gain_noise=0., name=os.path.join(TEST_FOLDER,'test_feed_data.h5'), return_full=True)
+        datapack = res['datapack']
         index_feed = IndexFeed(1)
         patch_names, _ = datapack.directions
         _, screen_directions = datapack.get_directions(patch_names)
@@ -132,8 +140,19 @@ def test_datapack_feed(tf_session):
 
         datapack_feed = DatapackFeed(datapack, solset='sol000',
                      postieror_name="posterior",
-                     selection={'ant':"RS*",'dir':None},
+                     selection={'ant':None,'dir':None},
                                      index_n=1)
-        init, next = init_feed(datapack_feed)
+        init, ((Y_real, Y_imag), freqs, X, Xstar, X_dim, Xstar_dim, cont) = init_feed(datapack_feed)
+
         tf_session.run(init)
-        print(tf_session.run(next)[2][:,0])
+        ((Y_real, Y_imag), freqs, X, Xstar, X_dim, Xstar_dim, cont) = tf_session.run(((Y_real, Y_imag), freqs, X, Xstar, X_dim, Xstar_dim, cont))
+        pred_phase = res['dtec'][0,:,:,0,None]*TEC_CONV/res['freqs']
+        Y_imag_pred = np.sin(pred_phase)
+        assert np.all(np.isclose(Y_imag_pred.reshape(Y_imag.shape), Y_imag))
+        Y_real_pred = np.cos(pred_phase)
+        assert np.all(np.isclose(Y_real_pred.reshape(Y_real.shape), Y_real))
+
+        datapack.current_solset = 'sol000'
+        datapack.select(time=slice(0,1,1))
+        antenna_labels, _ = datapack.antennas
+        _, antennas = datapack.get_antennas(antenna_labels)

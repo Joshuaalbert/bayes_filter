@@ -7,10 +7,13 @@ from ..feeds import init_feed
 from ..kernels import DTECIsotropicTimeGeneral
 from ..processes import DTECProcess
 from ..targets import DTECToGainsSAEM
+from ..sample import sample_chain
 from .. import float_type, TEC_CONV
+from ..sgd import stochastic_gradient_descent
 import astropy.time as at
 import astropy.coordinates as ac
 import astropy.units as au
+
 
 def test_custom_gradient(tf_session, lofar_array):
     import os
@@ -205,9 +208,10 @@ def test_custom_gradient(tf_session, lofar_array):
 def test_target(tf_session, lofar_array):
     import os
     Nf = 4
-    N = 5
+    N = 2
     Nd = N*N
     shuffle = np.random.choice(Nd*62, Nd*62, replace=False)
+    inv_sort = np.argsort(shuffle)
     data_slice, screen_slice = shuffle[:Nd*31], shuffle[Nd*31:]
 
     Na = len(lofar_array[0])
@@ -249,6 +253,9 @@ def test_target(tf_session, lofar_array):
                                         itrs_to_enu_with_references(lofar_array[1][0, :], [up.ra.rad, up.dec.rad],
                                                                     lofar_array[1][0, :])))
         init, X = init_feed(coord_feed)
+        X = tf.concat([tf.gather(X, data_slice, axis=0), tf.gather(X,screen_slice,axis=0)], axis=0)
+        data_slice = np.arange(Nd*62)[:Nd*31]
+        screen_slice = np.arange(Nd * 62)[Nd * 31:]
         tf_session.run(init)
 
         kern = DTECIsotropicTimeGeneral(variance=1.0, lengthscales=10.0,
@@ -259,7 +266,7 @@ def test_target(tf_session, lofar_array):
         K = kern.K(X)
         L = safe_cholesky(K)
 
-        Ftrue = 3.5*tf.matmul(L, tf.random.normal(shape=[tf.shape(K)[0], 1], dtype=float_type))
+        Ftrue = 4.5*tf.matmul(L, tf.random.normal(shape=[tf.shape(K)[0], 1], dtype=float_type))
         invfreqs = TEC_CONV * tf.math.reciprocal(freqs)
 
         phase_true = Ftrue * invfreqs
@@ -294,9 +301,8 @@ def test_target(tf_session, lofar_array):
         def logp(log_y_sigma, log_amp, f):
             # with jit_scope():
 
-            f_data = f
-            prior = tfp.distributions.MultivariateNormalDiag(loc=tf.zeros_like(f_data),
-                                                             scale_identity_multiplier=1.).log_prob(f_data)
+            prior = tfp.distributions.MultivariateNormalDiag(loc=tf.zeros_like(f),
+                                                             scale_identity_multiplier=1.).log_prob(f)
 
             y_sigma = tf.exp(log_y_sigma)
             amp = tf.exp(log_amp)
@@ -308,15 +314,18 @@ def test_target(tf_session, lofar_array):
             Yimag_model = tf.sin(dtec[:,:,None] * invfreqs)
             Yreal_model = tf.cos(dtec[:,:,None] * invfreqs)
 
-            likelihood = -tf.math.reciprocal(y_sigma[:, :, None])*sqrt_with_finite_grads( tf.math.square(Yimag_sample[None, :, :] - Yimag_model) + tf.math.square(Yreal_sample[None, :, :] - Yreal_model)) - log_y_sigma[:,:,None]
+            likelihood = -tf.math.reciprocal(y_sigma[:, :, None])*sqrt_with_finite_grads(
+                tf.math.square(Yimag_sample[None, :, :] - Yimag_model) +
+                tf.math.square(Yreal_sample[None, :, :] - Yreal_model)) \
+                         - log_y_sigma[:,:,None]
 
             # likelihood = tfp.distributions.Laplace(loc=Yimag[None, :, :], scale=y_sigma[:, :, None]).log_prob(
             #     Yimag_model) \
             #              + tfp.distributions.Laplace(loc=Yreal[None, :, :], scale=y_sigma[:, :, None]).log_prob(
             #     Yreal_model)
 
-            logp = tf.reduce_sum(likelihood, axis=[1, 2]) + prior
-                   # + tfp.distributions.Normal(tf.constant(0.07, dtype=float_type), tf.constant(0.1, dtype=float_type)).log_prob(y_sigma[:, 0])
+            logp = tf.reduce_sum(likelihood, axis=[1, 2]) + prior \
+                   + tfp.distributions.Normal(tf.constant(0.1, dtype=float_type), tf.constant(0.01, dtype=float_type)).log_prob(y_sigma[:, 0])
             return logp
 
         # @tf.custom_gradient
@@ -413,15 +422,26 @@ def test_target(tf_session, lofar_array):
                     pkr.inner_results.accepted_results.target_log_prob)
 
         init_state = [tf.constant(np.log(np.random.uniform(0.01, 0.2, (num_chains, 1))), float_type),
-                      tf.constant(np.log(np.random.uniform(0.09, 2., (num_chains, 1))), float_type),
+                      tf.constant(np.log(np.random.uniform(1., 2., (num_chains, 1))), float_type),
                       # tf.zeros([num_chains, 567], dtype=float_type)
                       0.3*tf.random.normal(tf.concat([[num_chains], tf.shape(Ftrue)[0:1]], axis=0), dtype=float_type)
                       ]
 
+        init_state = stochastic_gradient_descent(logp,init_state,100, step_size, learning_rate=0.1)
+
+        # samples = tfp.mcmc.sample_chain(  # ,
+        #     num_results=10000,
+        #     num_burnin_steps=5000,
+        #     trace_fn=None,#trace_fn,  # trace_step,
+        #     return_final_kernel_results=False,
+        #     current_state=init_state,
+        #     kernel=hmc,
+        #     parallel_iterations=10)
+
         samples = tfp.mcmc.sample_chain(  # ,
             num_results=10000,
-            num_burnin_steps=5000,
-            trace_fn=None,#trace_fn,  # trace_step,
+            num_burnin_steps=0,
+            trace_fn=None,  # trace_fn,  # trace_step,
             return_final_kernel_results=False,
             current_state=init_state,
             kernel=hmc,
@@ -519,6 +539,7 @@ def test_target(tf_session, lofar_array):
             shape = data.shape
             data = data.ravel()
             data[screen_slice] = np.nan
+            data = data[inv_sort]
             data = data.reshape(shape)
             return data
 
@@ -526,7 +547,7 @@ def test_target(tf_session, lofar_array):
         import os
         for i in range(Na):
 
-            output_folder = os.path.abspath(os.path.join(TEST_FOLDER,'test_target','run35', lofar_array[0][i]))
+            output_folder = os.path.abspath(os.path.join(TEST_FOLDER,'test_target','run44', lofar_array[0][i]))
 
             os.makedirs(output_folder, exist_ok=True)
 

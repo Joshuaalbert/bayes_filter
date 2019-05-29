@@ -14,11 +14,19 @@ def test_plotdatapack():
     # dp.plot(ant_sel=None, pol_sel=slice(0,1,1), time_sel=slice(0,1,1), fignames=['test_fig.png'], solset='sol000', observable='phase', plot_facet_idx=True,
     #         labels_in_radec=True, show=False)
 
-    datapack = make_example_datapack(10, 2, 2, pols=['XX'], clobber=True, name=os.path.join(TEST_FOLDER,'plotting_test.h5'))
+    datapack = os.path.join(TEST_FOLDER,'plotting_test.h5')
+
+    datapack = make_example_datapack(35, 2, 1, pols=['XX'], index_n=1,obs_type='DDTEC',
+                                     clobber=True, name=os.path.join(TEST_FOLDER,'plotting_test.h5'))
 
     animate_datapack(datapack,
-           os.path.join(TEST_FOLDER, 'test_plotting'),num_processes=1,observable='phase',labels_in_radec=True,
-                    solset='sol000', plot_facet_idx=True)
+           os.path.join(TEST_FOLDER, 'test_plotting_tecphase'),num_processes=1,observable='tec',labels_in_radec=True,
+                    solset='sol000', plot_facet_idx=True, tec_eval_freq=140e6,phase_wrap=True)
+
+    animate_datapack(datapack,
+                     os.path.join(TEST_FOLDER, 'test_plotting_tec'), num_processes=1, observable='tec',
+                     labels_in_radec=True,
+                     solset='sol000', plot_facet_idx=True,phase_wrap=False)
 
 def test_plot_vornoi_map():
     fig, ax = plt.subplots(1,1,figsize=(5,5))

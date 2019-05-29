@@ -5,7 +5,7 @@ import tensorflow as tf
 from astropy import time as at
 
 from bayes_filter import float_type
-from bayes_filter.coord_transforms import itrs_to_enu_6D, tf_coord_transform, itrs_to_enu_with_references
+from bayes_filter.coord_transforms import itrs_to_enu_6D, tf_coord_transform, itrs_to_enu_with_references, ITRSToENUWithReferences
 from bayes_filter.feeds import IndexFeed, TimeFeed, CoordinateFeed, init_feed
 from bayes_filter.misc import make_coord_array
 
@@ -56,11 +56,12 @@ def test_itrs_to_enu_with_references(tf_session, time_feed, lofar_array):
         dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(4, 1))
         Xd = tf.concat([ra, dec], axis=1)
         Xa = tf.constant(lofar_array[1], dtype=float_type)
-        coord_feed = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
+        coord_feed = CoordinateFeed(time_feed, Xd, Xa, coord_map=ITRSToENUWithReferences(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:]))
         init, next = init_feed(coord_feed)
         tf_session.run(init)
         out, N, slice_size = tf_session.run([next, coord_feed.N, coord_feed.slice_size])
-        print(out[0,:])
+
+        assert np.all(np.isclose(out[0, 4:7], np.zeros_like(out[0,4:7])))
         assert out.shape[0] == slice_size * 4 * len(lofar_array[0])
         assert out.shape[1] == 13
         assert np.all(np.isclose(np.linalg.norm(out[:,1:4],axis=1), 1.))

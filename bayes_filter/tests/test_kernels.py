@@ -5,8 +5,8 @@ import pylab as plt
 import tensorflow as tf
 from astropy import time as at
 
-from bayes_filter import float_type
-from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references
+from bayes_filter import float_type, KERNEL_SCALE
+from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references, ITRSToENUWithReferences
 from bayes_filter.feeds import IndexFeed, TimeFeed, CoordinateFeed, init_feed, CoordinateDimFeed
 from bayes_filter.kernels import Histogram, DTECIsotropicTimeGeneral, DTECIsotropicTimeGeneralODE
 from bayes_filter.misc import safe_cholesky
@@ -14,43 +14,40 @@ from bayes_filter.misc import safe_cholesky
 
 def test_histogram(tf_session):
     with tf_session.graph.as_default():
-
         heights = tf.constant(np.arange(50)+1,dtype=float_type)
         edgescales = tf.constant(np.arange(51)/50., dtype=float_type)
-        heights = tf.exp(-0.5*edgescales**2/1.**2)[:-1]
+        heights = tf.exp(-0.5*edgescales**2/0.1**2)[:-1]
         kern = Histogram(heights, edgescales=edgescales)
         x = tf.constant(np.linspace(0.,10.,100)[:,None],dtype=float_type)
-        x = tf.concat([x,x],axis=-1)
 
         h,e = tf_session.run([kern.heights, kern.edgescales])
 
         for i in range(50):
             plt.bar(0.5*(e[i+1]+e[i]),h[i],e[i+1]-e[i])
-        plt.savefig("test_histogram_spectrum.png")
-        plt.show()#close('all')
+        plt.savefig(os.path.join(TEST_FOLDER,"test_histogram_spectrum.png"))
+        plt.close('all')
 
         K = kern.matrix(x,x)
         K,L = tf_session.run([K,safe_cholesky(K)])
         plt.imshow(K)
         plt.colorbar()
-        plt.savefig("test_histogram.png")
+        plt.savefig(os.path.join(TEST_FOLDER,"test_histogram.png"))
         plt.show()#close("all")
         y = np.dot(L, np.random.normal(size=(100,3)))
         plt.plot(np.linspace(0,10.,100),y)
-        plt.savefig("test_histogram_sample.png")
-        plt.show()#close("all")
+        plt.savefig(os.path.join(TEST_FOLDER,"test_histogram_sample.png"))
+        plt.close("all")
 
         x0 = tf.constant([[0.]],dtype=float_type)
         K_line = kern.matrix(x, x0)
         K_line = tf_session.run(K_line)
         plt.plot(np.linspace(0,10,100),K_line[:,0])
-        plt.savefig("test_histogram_kline.png")
-        plt.show()#close('all')
-        # kern.plot_kernel(tf_session)
-        # plt.show()
-
+        plt.savefig(os.path.join(TEST_FOLDER,"test_histogram_kline.png"))
+        plt.close('all')
 
 def test_isotropic_time_general(tf_session, lofar_array):
+    output_folder = os.path.abspath(os.path.join(TEST_FOLDER,'test_kernels'))
+    os.makedirs(output_folder,exist_ok=True)
     with tf_session.graph.as_default():
         index_feed = IndexFeed(1)
         obstime_init = at.Time("2018-01-01T00:00:00.000", format='isot')
@@ -64,34 +61,61 @@ def test_isotropic_time_general(tf_session, lofar_array):
                                     coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
         init, next = init_feed(coord_feed)
 
-        index_feed = IndexFeed(2)
-        obstime_init = at.Time("2018-01-01T00:00:00.000", format='isot')
-        times = obstime_init.mjd * 86400. + tf.cast(tf.linspace(0., 50., 9)[:, None], float_type)
-        time_feed = TimeFeed(index_feed, times)
-        ra = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
-        dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
-        Xd = tf.concat([ra, dec], axis=1)
-        Xa = tf.constant(np.concatenate([lofar_array[1][0:1, :], lofar_array[1]], axis=0), dtype=float_type)
-        coord_feed2 = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
-        dim_feed = CoordinateDimFeed(coord_feed)
-        init2, next2 = init_feed(coord_feed2)
-        init3, next3 = init_feed(dim_feed)
+        # index_feed = IndexFeed(2)
+        # obstime_init = at.Time("2018-01-01T00:00:00.000", format='isot')
+        # times = obstime_init.mjd * 86400. + tf.cast(tf.linspace(0., 50., 9)[:, None], float_type)
+        # time_feed = TimeFeed(index_feed, times)
+        # ra = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
+        # dec = np.pi / 4 + 2. * np.pi / 180. * tf.random_normal(shape=(3, 1))
+        # Xd = tf.concat([ra, dec], axis=1)
+        # Xa = tf.constant(np.concatenate([lofar_array[1][0:1, :], lofar_array[1]], axis=0), dtype=float_type)
+        # coord_feed2 = CoordinateFeed(time_feed, Xd, Xa, coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
+        # dim_feed = CoordinateDimFeed(coord_feed)
+        # init2, next2 = init_feed(coord_feed2)
+        # init3, next3 = init_feed(dim_feed)
 
-        kern = DTECIsotropicTimeGeneral(variance=5e-4,timescale=30.,lengthscales=20., a=250., b=100., fed_kernel='RBF',obs_type='DDTEC',resolution=3, squeeze=True)
+        kern = DTECIsotropicTimeGeneral(variance=4., lengthscales=10.0,
+                 a=250., b=50.,  timescale=30., ref_location=[0.,0.,0.],
+                                        fed_kernel='RBF',obs_type='DDTEC',kernel_params=dict(resolution=3), squeeze=True)
 
-        tf_session.run([init, init2, init3])
-        K1, K2, dims = tf_session.run([kern.K(next), kern.K(next, next2), next3])
-        import pylab as plt
-        plt.imshow(K1)
-        plt.colorbar()
-        plt.show()
-        plt.imshow(K2)
-        plt.colorbar()
-        plt.show()
+        K = kern.K(next)
+        L = safe_cholesky(K)
 
-        L = np.linalg.cholesky(K1 + 1e-6*np.eye(K1.shape[-1]))
-        ddtecs = np.einsum("ab,bc->ac",L, np.random.normal(size=L.shape)).reshape(list(dims)+[L.shape[0]])
-        print(ddtecs[:,:,51].var(), 0.01**2/ddtecs[:,:,51].var())
+        kern2 = DTECIsotropicTimeGeneral(variance=1., lengthscales=10.0,
+                                        a=250., b=50., timescale=30., ref_location=[0., 0., 0.],
+                                        fed_kernel='RBF', obs_type='DDTEC', kernel_params=dict(resolution=3),
+                                        squeeze=True)
+
+        K2 = kern2.K(next)
+        L2 = 2*safe_cholesky(K2)
+
+        kern3 = DTECIsotropicTimeGeneral(variance=1.*np.ones((2,1)), lengthscales=10.0*np.ones((2,1)),
+                                        a=250.*np.ones((2,1)), b=50.*np.ones((2,1)), timescale=30.*np.ones((2,1)), ref_location=[0., 0., 0.],
+                                        fed_kernel='RBF', obs_type='DDTEC', kernel_params=dict(resolution=3),
+                                        squeeze=True)
+
+        K3 = kern3.K(next)
+
+        tf_session.run([init])
+        X, K, L, L2, K2, K3 = tf_session.run([next, K, L,L2, K2, K3])
+        assert np.all(np.isclose(L, L2))
+        assert K3.shape == (2,)+K2.shape
+        assert np.all(np.isclose(K2,K3))
+        assert np.all(K2==K3)
+        # import pylab as plt
+        # plt.imshow(K)
+        # plt.colorbar()
+        # plt.savefig(os.path.join(output_folder,'K.png'))
+        # plt.close('all')
+        #
+        # plt.plot(np.diag(K))
+        # plt.savefig(os.path.join(output_folder, 'diag.png'))
+        # plt.close('all')
+        #
+        # plt.imshow(L)
+        # plt.colorbar()
+        # plt.savefig(os.path.join(output_folder, 'L.png'))
+        # plt.close('all')
 
 
 def test_isotropic_time_general_ode(tf_session, lofar_array):
@@ -105,7 +129,7 @@ def test_isotropic_time_general_ode(tf_session, lofar_array):
         Xd = tf.concat([ra, dec], axis=1)
         Xa = tf.constant(np.concatenate([lofar_array[1][0:1,:], lofar_array[1]],axis=0), dtype=float_type)
         coord_feed = CoordinateFeed(time_feed, Xd, Xa,
-                                    coord_map=tf_coord_transform(itrs_to_enu_with_references(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:])))
+                                    coord_map=ITRSToENUWithReferences(lofar_array[1][0,:], [np.pi/4,np.pi/4], lofar_array[1][0,:]))
         init, next = init_feed(coord_feed)
         kern = DTECIsotropicTimeGeneralODE(variance=5e-2,timescale=30.,lengthscales=18., a=300., b=90.,
                                            fed_kernel='RBF',obs_type='DTEC',squeeze=True,

@@ -1,12 +1,44 @@
 from .common_setup import *
 
 import os
-from ..callbacks import DatapackStoreCallback, GetLearnIndices, StoreHyperparameters
+from ..callbacks import DatapackStoreCallback, GetLearnIndices, StoreHyperparameters, callback_sequence, PlotRhat, PlotEss
 from ..misc import make_example_datapack
 from ..settings import float_type,dist_type
+from threading import Lock
 
 import tensorflow as tf
 import numpy as np
+
+def test_PlotRhat(tf_session):
+    with tf_session.graph.as_default():
+        cb = PlotRhat(lock=Lock(), plot_directory=os.path.join(TEST_FOLDER,'test_callbacks'))
+        res = cb(0,1,(np.random.uniform(size=1000)+1)**2., 'test')
+        print(tf_session.run(res))
+
+def test_PlotEss(tf_session):
+    with tf_session.graph.as_default():
+        cb = PlotEss(lock=Lock(), plot_directory=os.path.join(TEST_FOLDER,'test_callbacks'))
+        res = cb(0,1,(np.random.uniform(size=1000)+1)**2., 'test')
+        print(tf_session.run(res))
+
+def test_callback_sequence(tf_session):
+    datapack = make_example_datapack(10, 2, 2, clobber=True, name=os.path.join(TEST_FOLDER, "test_callbacks_data.h5"))
+    antenna_labels, _ = datapack.antennas
+    _, antennas = datapack.get_antennas(antenna_labels)
+    Xa = antennas.cartesian.xyz.to(dist_type).value.T.astype(np.float64)
+
+    callbacks = []
+    args = []
+    with tf_session.graph.as_default():
+        callbacks.append(GetLearnIndices(dist_cutoff=0.3))
+        args.append([tf.convert_to_tensor(Xa, dtype=float_type)])
+        if os.path.exists(os.path.join(TEST_FOLDER,'test_hyperparam_store.npz')):
+            os.unlink(os.path.join(TEST_FOLDER,'test_hyperparam_store.npz'))
+        callbacks.append(StoreHyperparameters(store_file=os.path.join(TEST_FOLDER,'test_hyperparam_store.npz')))
+        args.append((1000., [0., 1., 2., 3., 4.], [0.], [0.]))
+
+        tf_session.run(callback_sequence(callbacks, args))
+
 
 def test_datapack_store(tf_session):
     datapack = make_example_datapack(10,2,2,clobber=True, name=os.path.join(TEST_FOLDER,"test_callbacks_data.h5"))
@@ -47,5 +79,5 @@ def test_store_hyperparams(tf_session):
         if os.path.exists(os.path.join(TEST_FOLDER,'test_hyperparam_store.npz')):
             os.unlink(os.path.join(TEST_FOLDER,'test_hyperparam_store.npz'))
         callback = StoreHyperparameters(store_file=os.path.join(TEST_FOLDER,'test_hyperparam_store.npz'))
-        size = callback(1000., [0., 1., 2., 3., 4., 5.])
+        size = callback(1000., [0., 1., 2., 3., 4.], [0.], [0.])
         assert tf_session.run(size)[0] == 1

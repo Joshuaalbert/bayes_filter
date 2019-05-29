@@ -6,14 +6,17 @@ import os
 import tensorflow as tf
 
 from bayes_filter import jitter
-from bayes_filter.misc import random_sample, flatten_batch_dims, load_array_file, timer, diagonal_jitter, \
-    log_normal_solve_fwhm,make_example_datapack, maybe_create_posterior_solsets, graph_store_get,graph_store_set
+from bayes_filter.misc import (random_sample, flatten_batch_dims, load_array_file, timer, diagonal_jitter,
+    log_normal_solve_fwhm,make_example_datapack, maybe_create_posterior_solsets, graph_store_get,graph_store_set,
+                               safe_cholesky)
 
 def test_getset_graph_ops(tf_graph):
     a = tf.constant(0)
     graph_store_set('a',a, graph=tf_graph)
     a_out = graph_store_get('a',tf_graph)
     assert a == a_out
+
+
 
 
 def test_random_sample(tf_session):
@@ -24,15 +27,22 @@ def test_random_sample(tf_session):
         assert tf_session.run(random_sample(t, 9)).shape == (6, 5, 8)
 
 
+def test_safe_cholesky(tf_session):
+    with tf_session.graph.as_default():
+        A = tf.ones((5, 6,6), float_type)
+        K = tf.matmul(A, A, transpose_b=True)
+        L = safe_cholesky(K)
+        assert tf_session.run(L).shape == (5,6,6)
+
 def test_flatten_batch_dims(tf_session):
     with tf_session.graph.as_default():
         t = tf.ones((1,2,3,4))
         f = flatten_batch_dims(t)
         assert tuple(tf_session.run(tf.shape(f))) == (6,4)
 
-        t = tf.ones((1, 2, 3, 4))
-        f = flatten_batch_dims(t,num_batch_dims=2)
-        assert tuple(tf_session.run(tf.shape(f))) == (2, 3 , 4)
+        t = tf.ones((2,1, 2, 3, 4))
+        f = flatten_batch_dims(t,num_batch_dims=3)
+        assert tuple(tf_session.run(tf.shape(f))) == (4, 3 , 4)
 
 
 def test_load_array_file(arrays):
@@ -68,11 +78,19 @@ def test_log_normal_solve_fwhm():
     assert np.isclose(mu, 3./2. + 0.5 * (0.5) ** 2)
 
 def test_make_example_datapack():
-    datapack = make_example_datapack(4,2,2,name=os.path.join(TEST_FOLDER,'test_misc.h5'),clobber=True)
+    res = make_example_datapack(4,2,2,obs_type='DDTEC',name=os.path.join(TEST_FOLDER,'test_misc.h5'),clobber=True, return_full=True)
+    datapack = res['datapack']
+    datapack.current_solset = 'sol000'
     assert 'sol000' in datapack.solsets
     assert 'phase000' in datapack.soltabs
     assert 'tec000' in datapack.soltabs
     assert np.any(np.abs(datapack.phase[0])>0)
+
+    assert np.all(np.isclose(res['phase'], datapack.phase[0]))
+    assert np.all(np.isclose(res['dtec'], datapack.tec[0]))
+    # assert np.all(np.isclose(res['antennas'], datapack.get_antennas(datapack.antennas[0])[1]))
+    # assert np.all(np.isclose(res['directions'], datapack.get_directions(datapack.directions[0])[1]))
+
 
 def test_maybe_create_posterior_solsets():
     datapack = make_example_datapack(4,2,3,name=os.path.join(TEST_FOLDER,'test_misc.h5'),clobber=True)
