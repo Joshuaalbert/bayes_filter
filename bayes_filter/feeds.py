@@ -115,8 +115,12 @@ class DatapackFeed(Feed):
         self.index_feed = index_feed
         self.index_n = index_n
         self.datapack = datapack
-        self.selection = selection
-        self.screen_selection = self.selection.copy()
+        self.basis_selection = selection
+        self.selection = self.basis_selection.copy()
+        self.selection['ant'] = None
+        self.selection['dir'] = None
+        self.screen_selection = self.basis_selection.copy()
+        self.screen_selection['ant'] = None
         self.screen_selection['dir'] = None #always store all directions of screen
         self.solset = solset
         self.posterior_name = postieror_name
@@ -132,7 +136,7 @@ class DatapackFeed(Feed):
         self.index_map = self.create_index_map(solset, self.data_map[solset])
         self.ref_ant = ref_ant
         self.ref_dir = ref_dir
-        self.freq_feed, self.time_feed,self.coord_feed, self.star_coord_feed = self.create_coord_and_time_feeds()
+        self.freq_feed, self.time_feed,self.coord_feed, self.star_coord_feed, self.basis_coord_feed, = self.create_coord_and_time_feeds()
         self.data_feed = self.index_feed.feed.map(self.get_data_block, num_parallel_calls=1)
 
         self.coord_dim_feed = CoordinateDimFeed(self.coord_feed)
@@ -140,12 +144,13 @@ class DatapackFeed(Feed):
         self.continue_feed = ContinueFeed(self.coord_feed.time_feed)
 
         self.datapack_feed = tf.data.Dataset.zip((self.data_feed,
-                            self.freq_feed.feed,
-                            self.coord_feed.feed,
-                            self.star_coord_feed.feed,
-                            self.coord_dim_feed.feed,
-                            self.star_coord_dim_feed.feed,
-                            self.continue_feed.feed))
+                                                  self.freq_feed.feed,
+                                                  self.coord_feed.feed,
+                                                  self.star_coord_feed.feed,
+                                                  self.coord_dim_feed.feed,
+                                                  self.star_coord_dim_feed.feed,
+                                                  self.basis_coord_feed.feed,
+                                                  self.continue_feed.feed))
         self.feed = self.datapack_feed
 
     def _get_coords(self, solset, soltab, selection = None):
@@ -207,29 +212,42 @@ class DatapackFeed(Feed):
         coords = self._get_coords(solset, soltab, selection)
         ref_ant = coords['Xa'][0, :]
         ref_dir = np.mean(coords['Xd'], axis=0)
-        coords = self._get_coords(self.screen_solset, soltab)
-        Xt = coords['Xt']
-        Xd = coords["Xd"]
-        Xa = coords["Xa"]
-        freq_feed = FreqFeed(coords['Xf'])
+
+        basis_coords = self._get_coords(solset, soltab, self.basis_selection)
+        Xt = basis_coords['Xt']
+        Xd = basis_coords["Xd"]
+        Xa = basis_coords["Xa"]
+
+        freq_feed = FreqFeed(basis_coords['Xf'])
+
         if self.index_feed is None:
             if self.index_n is None:
                 raise ValueError("At least index_n or index_feed must not be None.")
             self.index_feed = IndexFeed(self.index_n, Xt.shape[0])
         time_feed = TimeFeed(self.index_feed, Xt.astype(np.float64), num_parallel_calls=self.num_parallel_calls)
+
+        basis_coord_feed = CoordinateFeed(time_feed,
+                                    tf.convert_to_tensor(Xd, dtype=float_type),
+                                    tf.convert_to_tensor(Xa, dtype=float_type),
+                                    coord_map=ITRSToENUWithReferences(ref_ant, ref_dir, ref_ant))
+
+        posterior_coords = self._get_coords(self.posterior_solset, soltab, self.selection)
+        Xd = posterior_coords["Xd"]
+        Xa = posterior_coords["Xa"]
         coord_feed = CoordinateFeed(time_feed,
                                      tf.convert_to_tensor(Xd, dtype=float_type),
                                      tf.convert_to_tensor(Xa, dtype=float_type),
                                      coord_map=ITRSToENUWithReferences(ref_ant, ref_dir, ref_ant))
-        coords = self._get_coords(solset, soltab, self.screen_selection)
-        Xd_screen = coords["Xd"]
-        Xa = coords["Xa"]
+
+        star_coords = self._get_coords(self.screen_solset, soltab, self.screen_selection)
+        Xd_screen = star_coords["Xd"]
+        Xa = star_coords["Xa"]
         starcoord_feed = CoordinateFeed(time_feed,
                                     tf.convert_to_tensor(Xd_screen, dtype=float_type),
                                     tf.convert_to_tensor(Xa, dtype=float_type),
                                     coord_map=ITRSToENUWithReferences(ref_ant, ref_dir, ref_ant))
 
-        return freq_feed, time_feed, coord_feed,starcoord_feed
+        return freq_feed, time_feed, coord_feed, starcoord_feed, basis_coord_feed
 
     def get_data_block(self, index, next_index):
         """

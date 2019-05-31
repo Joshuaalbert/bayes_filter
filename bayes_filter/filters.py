@@ -481,9 +481,12 @@ class FreeTransitionVariationalBayes(object):
 
     def init_filter(self):
 
-        self.full_block_size = (self.datapack_feed.coord_feed.N + self.datapack_feed.star_coord_feed.N) * self.datapack_feed.time_feed.slice_size
+        # self.full_block_size = (self.datapack_feed.coord_feed.N + self.datapack_feed.star_coord_feed.N) * self.datapack_feed.time_feed.slice_size
 
-        white_dtec_posterior_temp = WhitenedVariationalPosterior(self.datapack_feed.coord_feed.N)
+        ###
+        # choose Z
+
+        white_dtec_posterior_temp = WhitenedVariationalPosterior(self.datapack_feed.basis_coord_feed.N)
         self.init_params = white_dtec_posterior_temp.initial_variational_params()
         self.init_hyperparams = (tfp.distributions.softplus_inverse(tf.ones((1,5), float_type)),)
 
@@ -529,9 +532,9 @@ class FreeTransitionVariationalBayes(object):
                              num_mcmc_param_samples_infer=_maybe_cast(num_mcmc_param_samples_infer, tf.int32)
                              )
 
-        (index, next_index), ((Yreal, Yimag), freqs, X, Xstar, X_dim, Xstar_dim, cont) = self.datapack_feed_iterator.get_next()
+        (index, next_index), ((Yreal, Yimag), freqs, X, Xstar, X_dim, Xstar_dim, Z, cont) = self.datapack_feed_iterator.get_next()
 
-        variational_bayes = VariationalBayes(Yreal, Yimag, freqs, X, Xstar,y_sigma,
+        variational_bayes = VariationalBayes(Yreal, Yimag, freqs, X, Xstar, Z, y_sigma,
                                              dtec_samples=sample_params['num_mcmc_param_samples_learn'],
                                              kernel_params=kernel_params)
 
@@ -577,6 +580,7 @@ class FreeTransitionVariationalBayes(object):
 
         Yreal_data = tf.math.cos(phase_data)
         Yimag_data = tf.math.sin(phase_data)
+
         next_y_sigma = 0.5 * tf.reduce_mean(
             tf.math.abs(Yreal - tf.reduce_mean(Yreal_data, axis=[0, 1]))) + 0.5 * tf.reduce_mean(
             tf.math.abs(Yimag - tf.reduce_mean(Yimag_data, axis=[0, 1])))

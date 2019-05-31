@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import tensorflow_probability as tfp
-from .sgd import adam_stochastic_gradient_descent, natural_adam_stochastic_gradient_descent, natural_adam_stochastic_gradient_descent_with_linesearch
+from .sgd import adam_stochastic_gradient_descent, natural_adam_stochastic_gradient_descent, natural_adam_stochastic_gradient_descent_with_linesearch, natural_adam_stochastic_gradient_descent_with_linesearch_minibatch
 from . import float_type, TEC_CONV
 from .misc import sqrt_with_finite_grads, safe_cholesky, flatten_batch_dims
 from .kernels import DTECIsotropicTimeGeneral
@@ -356,8 +356,8 @@ class VariationalBayesHeirarchical(object):
         return loss, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale, y_sigma), (
         white_dtec_mean, white_dtec_scale), (hyperparam_mean, hyperparam_scale)
 
-class VariationalBayes(object):
-    def __init__(self, Yreal, Yimag, freqs, X, Xstar, y_sigma, dtec_samples=10, kernel_params=None, minibatch_size=None):
+class VariationalBayesZIsX(object):
+    def __init__(self, Yreal, Yimag, freqs, X, Xstar, y_sigma, dtec_samples=10, kernel_params=None, minibatch_size=None, quadrature_var_exp=False):
         self._Yreal = Yreal
         self._Yimag = Yimag
         self._freqs = freqs
@@ -375,6 +375,7 @@ class VariationalBayes(object):
             self._scale = tf.cast(self.N, float_type)/tf.cast(self._minibatch_size, float_type)
         else:
             self._scale = tf.constant(1., float_type)
+        self._quadrature_var_exp = quadrature_var_exp
 
         self._white_posterior = WhitenedVariationalPosterior(event_size=tf.shape(self._X)[0])
 
@@ -448,14 +449,7 @@ class VariationalBayes(object):
             # A, B, N
             return tf.tensordot(white_dtec, L, axes=[[-1], [-1]])
 
-        white_dist = self._white_posterior._build_distribution(*white_vi_params)
-        # num_dtec, N
-        white_dtec = white_dist.sample(self._dtec_samples)
-
-        likelihood = LaplaceLikelihood(self._Yreal, self._Yimag, self._freqs, transform_fn=transform_fn)
-
-        #TODO: derive better var_exp
-        var_exp = tf.reduce_mean(likelihood.log_prob(white_dtec, self._y_sigma))
+        var_exp = self._calculate_var_exp(transform_fn, white_vi_params)
         dtec_prior_KL = self._dtec_prior_kl(white_vi_params, L)
 
         # scalar
@@ -467,6 +461,19 @@ class VariationalBayes(object):
 
             loss = tf.math.negative(elbo, name='loss')
         return loss
+
+    def _calculate_var_exp(self, transform_fn, white_vi_params):
+        if not self._quadrature_var_exp:
+            white_dist = self._white_posterior._build_distribution(*white_vi_params)
+            # num_dtec, N
+            white_dtec = white_dist.sample(self._dtec_samples)
+            likelihood = LaplaceLikelihood(self._Yreal, self._Yimag, self._freqs, transform_fn=transform_fn)
+            # TODO: derive better var_exp
+            var_exp = tf.reduce_mean(likelihood.log_prob(white_dtec, self._y_sigma))
+            return var_exp
+
+        ## Use Gauss Hermite Quadrature
+
 
     def _dtec_prior_kl(self, white_dtec_params, L):
         """
@@ -529,9 +536,7 @@ class VariationalBayes(object):
 
         # TODO: mini batch and choose larger basis
         # TODO: speed up kernel computation ^^ help
-        # TODO: quadrature perhaps
-        # TODO: momentum in natgrad
-        # TODO: adaptive stopping
+        # TODO: fix screen approximation
 
         [white_dtec_mean, white_dtec_scale], [hyperparams_unconstrained], loss = \
             natural_adam_stochastic_gradient_descent_with_linesearch(self._loss_fn,
@@ -554,16 +559,218 @@ class VariationalBayes(object):
                                         **self._kernel_params)
 
         # num_hyperparams, N, N
-        K_yy = kern.K(self._X, None)
+        K_x_x = kern.K(self._X, None)
         # num_hyperparams, N, N
-        L_yy = safe_cholesky(K_yy)
+        L_x_x = safe_cholesky(K_x_x)
         # num_hyperparams, M, N
-        K_yx = kern.K(self._X, self._Xstar)
-        K_xx = kern.K(self._Xstar, None)
+        K_x_xstar = kern.K(self._X, self._Xstar)
+        K_xstar_xstar = kern.K(self._Xstar, None)
 
         q_mean, q_sqrt = white_dtec_mean, tf.nn.softplus(white_dtec_scale)
-        dtec_data_dist = conditional_same_points(q_mean, q_sqrt, L_yy)
-        dtec_screen_dist = conditional_different_points(q_mean, q_sqrt, L_yy, K_xx, K_yx)
+        dtec_data_dist = conditional_same_points(q_mean, q_sqrt, L_x_x)
+        dtec_screen_dist = conditional_different_points(q_mean, q_sqrt, L_x_x, K_xstar_xstar, K_x_xstar)
+
+        return loss, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale), (
+        white_dtec_mean, white_dtec_scale), (hyperparams_unconstrained,)
+
+
+class VariationalBayes(object):
+    def __init__(self, Yreal, Yimag, freqs, X, Xstar, Z, y_sigma, dtec_samples=10, kernel_params=None, minibatch_size=None):
+        self._Yreal = Yreal
+        self._Yimag = Yimag
+        self._freqs = freqs
+        self._y_sigma = y_sigma
+        self._invfreqs = tf.constant(TEC_CONV, float_type) * tf.math.reciprocal(freqs)
+        self._X = X
+        self._Xstar = Xstar
+        self._Z = Z
+        self._Xconcat = tf.concat([self._X, self._Xstar], axis=0)
+        self.N = tf.shape(self._X)[0]
+        self.Ns = tf.shape(self._Xstar)[0]
+        self.Nz = tf.shape(self._Z)[0]
+        self._kernel_params = kernel_params
+        self._dtec_samples = tf.convert_to_tensor(dtec_samples, tf.int32, name='num_dtec_samples')
+        self._minibatch_size = tf.convert_to_tensor(minibatch_size,tf.int64) if minibatch_size is not None else None
+        if self._minibatch_size is not None:
+            self._scale = tf.cast(self.N, float_type)/tf.cast(self._minibatch_size, float_type)
+        else:
+            self._scale = tf.constant(1., float_type)
+
+        self._white_posterior = WhitenedVariationalPosterior(event_size=self.Nz)
+
+        self._hyperparam_bijectors = [
+            tfp.bijectors.Chain(
+                [tfp.bijectors.AffineScalar(scale=tf.constant(3., float_type)), tfp.bijectors.Softplus()]),
+            tfp.bijectors.Chain(
+                [tfp.bijectors.AffineScalar(scale=tf.constant(15., float_type)), tfp.bijectors.Softplus()]),
+            tfp.bijectors.Chain(
+                [tfp.bijectors.AffineScalar(scale=tf.constant(250., float_type)), tfp.bijectors.Softplus()]),
+            tfp.bijectors.Chain(
+                [tfp.bijectors.AffineScalar(scale=tf.constant(100., float_type)), tfp.bijectors.Softplus()]),
+            tfp.bijectors.Chain(
+                [tfp.bijectors.AffineScalar(scale=tf.constant(50., float_type)), tfp.bijectors.Softplus()])
+        ]
+
+    def _initial_states(self, batch_size=None):
+        return self._white_posterior.initial_variational_params(
+            batch_size), (tfp.distributions.softplus_inverse(tf.ones((1,5),float_type)),)
+
+    def _constrain_hyperparams(self, sampled_hyperparams):
+        """
+        Constrains the samples of hyperparams.
+
+        :param sampled_hyperparams: tf.Tensor
+            [samples, 6]
+        :return: Tuple of tf.Tensor
+            Each of shape [samples, 1]
+        """
+        constrained_hyperparams = []
+        for i in range(len(self._hyperparam_bijectors)):
+            bijector = self._hyperparam_bijectors[i]
+            # num_hyperparams, 1
+            s = sampled_hyperparams[:, i:i + 1]
+            constrained_hyperparams.append(bijector.forward(s))
+
+        return constrained_hyperparams
+
+    def _loss_fn(self, white_dtec_mean, white_dtec_scale, hyperparams_unconstrained, Xmini, Ymini):
+        white_vi_params = (white_dtec_mean, white_dtec_scale)
+
+        #each 1,1
+        amp, lengthscales, a, b, timescale = self._constrain_hyperparams(hyperparams_unconstrained)
+
+        kern = DTECIsotropicTimeGeneral(variance=tf.math.square(amp),
+                                        lengthscales=lengthscales,
+                                        a=a,
+                                        b=b,
+                                        timescale=timescale,
+                                        squeeze=False,
+                                        **self._kernel_params)
+
+        q_mean = white_dtec_mean
+        q_sqrt = tf.nn.softplus(white_dtec_scale)
+        K_z_z = kern.K(self._Z, None)
+        L_z_z = safe_cholesky(K_z_z)
+        K_z_xmini = kern.K(self._Z, Xmini)
+        K_xmini_xmini = kern.K(Xmini, None)
+        q_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_xmini_xmini, K_z_xmini)
+        dtec_samples = q_dist.sample(self._dtec_samples)
+        likelihood = LaplaceLikelihood(Ymini[0], Ymini[1], self._freqs, transform_fn=lambda x: x)
+        # TODO: derive better var_exp
+        var_exp = tf.reduce_mean(likelihood.log_prob(dtec_samples, self._y_sigma))
+
+
+        dtec_prior_KL = self._dtec_prior_kl(white_vi_params, L_z_z)
+
+        # scalar
+        elbo = var_exp*self._scale - dtec_prior_KL
+        with tf.control_dependencies([tf.print('elbo', elbo,
+                                               'var_exp', var_exp, 'dtec_prior', dtec_prior_KL,
+                                               'amp', amp, 'lengthscales', lengthscales, 'a', a, 'b', b, 'timescale',
+                                               timescale, 'y_sigma', self._y_sigma)]):
+
+            loss = tf.math.negative(elbo, name='loss')
+        return loss
+
+    def _dtec_prior_kl(self, q_mean,  q_sqrt, L):
+        """
+        Get the KL-div [ Q(white_dtec) || P(white_dtec | hyperparams)]
+        where
+        Q = N[m, S] and S is diagonal
+        and
+        P = |L|^{-1} N[0,I]
+
+        KL-div [ N[m, S] || |L|^{-1} N[0,I]] =
+        KL-div [ N[m, S] || |L|^{-1} N[0,I]] + log |L|
+
+        :param white_dtec_params: tuple of tf.Tensor
+            [N+Ns] mean
+            [N+Ns] unconstrained scale
+        :param L: tf.Tensor
+            [num_hyperparams, N, N]
+        :return: tf.Tensor
+            [num_hyperparams]
+        """
+
+        logdetL = tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)))
+
+        # [N+Ns]
+        q_var = tf.math.square(q_sqrt)
+        trace = tf.reduce_sum(q_var)
+        mahalanobis = tf.reduce_sum(tf.math.square(q_mean))
+        constant = -tf.cast(tf.size(q_mean, out_type=tf.int64), float_type)
+        logdet_qcov  = tf.reduce_sum(tf.math.log(q_var))
+
+        twoKL = mahalanobis + constant - logdet_qcov + trace - logdetL
+        return 0.5 * twoKL
+
+        # # num_hyperparams
+        #
+        # return 0.5 * tf.reduce_sum(
+        #     variance + tf.math.square(mean) - tf.constant(1., float_type) - 2. * tf.math.log(variance),
+        #     axis=-1) + logdetL
+
+    def _build_variational_posteriors(self, white_vi_params):
+        white_dist = self._white_posterior._build_distribution(*white_vi_params)
+
+        return white_dist
+
+    def solve_variational_posterior(self, param_warmstart, hyperparams_warmstart,
+                                    solver_params=None, parallel_iterations=10):
+        (white_dtec_mean, white_dtec_scale), (hyperparams_unconstrained,) = self._initial_states()
+
+        # ((white_dtec_mean, white_dtec_scale), (hyperparams_unconstrained,)) = \
+        #     tf.cond(tf.reduce_all(tf.equal(param_warmstart[0], 0.)),
+        #             lambda: ((white_dtec_mean, white_dtec_scale), (hyperparams_unconstrained,)),
+        #             lambda: (param_warmstart, hyperparams_warmstart), strict=True)
+
+        (white_dtec_mean, white_dtec_scale) = \
+            tf.cond(tf.reduce_all(tf.equal(param_warmstart[0], 0.)),
+                    lambda: (white_dtec_mean, white_dtec_scale),
+                    lambda: param_warmstart, strict=True)
+
+        # TODO: mini batch and choose larger basis
+        # TODO: speed up kernel computation ^^ help
+        # TODO: fix screen approximation
+
+        [white_dtec_mean, white_dtec_scale], [hyperparams_unconstrained], loss = \
+            natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(self._loss_fn,
+                                                                               self._X,
+                                                                               (self._Yreal, self._Yimag),
+                                                                               self._minibatch_size,
+                                                                               [white_dtec_mean, white_dtec_scale],
+                                                                               [hyperparams_unconstrained],
+                                                                               parallel_iterations=parallel_iterations,
+                                                                               **solver_params)
+
+        ###
+        # produce the posterior distributions needed
+
+        amp, lengthscales, a, b, timescale = self._constrain_hyperparams(hyperparams_unconstrained)
+
+        kern = DTECIsotropicTimeGeneral(variance=tf.math.square(amp),
+                                        lengthscales=lengthscales,
+                                        a=a,
+                                        b=b,
+                                        timescale=timescale,
+                                        squeeze=False,
+                                        **self._kernel_params)
+
+        q_mean, q_sqrt = white_dtec_mean, tf.nn.softplus(white_dtec_scale)
+
+        # num_hyperparams, N, N
+        K_z_z = kern.K(self._Z, None)
+        # num_hyperparams, N, N
+        L_z_z = safe_cholesky(K_z_z)
+        # num_hyperparams, M, N
+        K_z_xstar = kern.K(self._Z, self._Xstar)
+        K_xstar_xstar = kern.K(self._Xstar, None)
+        dtec_screen_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_xstar_xstar, K_z_xstar)
+
+        # num_hyperparams, M, N
+        K_z_x = kern.K(self._Z, self._X)
+        K_x_x = kern.K(self._X, None)
+        dtec_data_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_x_x, K_z_x)
 
         return loss, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale), (
         white_dtec_mean, white_dtec_scale), (hyperparams_unconstrained,)
@@ -597,11 +804,11 @@ def conditional_same_points(q_mean, q_sqrt, L, prior_mean=None):
                                                     scale_tril=scale_tril)
 
 
-def conditional_different_points(q_mean, q_sqrt, L_yy, K_xx, K_yx, prior_mean=None):
+def conditional_different_points(q_mean, q_sqrt, L, K_xstar_xstar, K_x_xstar, prior_mean=None):
     """
     Computes P(tau(X) | Y)
-    = int P(tau(X) | x(Y)) Q(x(Y)) dx(Y)
-    = N[prior_mean(X) + K(X,Y)L^-1.q_mean, K(X,X) - K(X,Y) L^-T( I + q_sqrt^2) L^-1 K(Y,X)]
+    = int P(tau(Xstar) | x(X)) Q(x(X)) dx(X)
+    = |L(X,X)| N[m(Xstar) + K(Xstar, X) L(X,X)^-T.q_mean, K(Xstar,Xstar) + K(Xstar,X) L(X,X)^-T(q_sqrt^2 - I) L(X,X)^-1 K(X,Xstar)]
 
     :param q_mean: tf.Tensor
         [N]
@@ -619,20 +826,19 @@ def conditional_different_points(q_mean, q_sqrt, L_yy, K_xx, K_yx, prior_mean=No
         batch_shape is [num_hyperparams]
         event_shape is [N]
     """
-    # [N]
-    diag = tf.math.sqrt(tf.math.square(q_sqrt) - tf.constant(1., float_type))
-    # [num_hyperparams, N, M]
-    A = tf.linalg.triangular_solve(L_yy, K_yx)
-    B = diag[:, None] * A
-    C = K_xx + tf.matmul(B, B, transpose_a=True)
-    # num_hyperparams, M, M
-    Lc = safe_cholesky(C)
-    # num_hyperparams, M
+    ###
+    # conditional one first
+    # [num_hyperparams, M, N]
+    A = tf.linalg.triangular_solve(L, K_x_xstar)
+    B = q_sqrt[:, None] * A
+    # num_hyperparams, N
     mean = tf.tensordot(A, q_mean, axes=[[-2], [-1]])
+    f_cov = K_xstar_xstar - tf.matmul(A,A,transpose_a=True) + tf.matmul(B,B,transpose_a=True)
+    L = safe_cholesky(f_cov)
+
     if prior_mean is None:
         return tfp.distributions.MultivariateNormalTriL(loc=mean,
-                                                        scale_tril=Lc)
+                                                        scale_tril=L)
     return tfp.distributions.MultivariateNormalTriL(loc=prior_mean + mean,
-                                                    scale_tril=Lc)
-
+                                                    scale_tril=L)
 
