@@ -660,7 +660,7 @@ class VariationalBayes(object):
         var_exp = tf.reduce_mean(likelihood.log_prob(dtec_samples, self._y_sigma))
 
 
-        dtec_prior_KL = self._dtec_prior_kl(white_vi_params, L_z_z)
+        dtec_prior_KL = self._dtec_prior_kl(q_mean, q_sqrt, L_z_z)
 
         # scalar
         elbo = var_exp*self._scale - dtec_prior_KL
