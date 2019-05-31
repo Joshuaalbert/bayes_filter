@@ -502,7 +502,8 @@ class FreeTransitionVariationalBayes(object):
                     num_mcmc_param_samples_infer,
                     solver_params=None,
                     parallel_iterations=10,
-                    kernel_params=None):
+                    kernel_params=None,
+                    minibatch_size=None):
         """
 
         :param param_warmstart:
@@ -536,7 +537,8 @@ class FreeTransitionVariationalBayes(object):
 
         variational_bayes = VariationalBayes(Yreal, Yimag, freqs, X, Xstar, Z, y_sigma,
                                              dtec_samples=sample_params['num_mcmc_param_samples_learn'],
-                                             kernel_params=kernel_params)
+                                             kernel_params=kernel_params,
+                                             minibatch_size=minibatch_size)
 
         t0 = timer()
         with tf.control_dependencies([t0]):
@@ -630,7 +632,8 @@ class FreeTransitionVariationalBayes(object):
                solver_params=None,
                num_mcmc_param_samples_learn = 1,
                num_mcmc_param_samples_infer=10,
-               y_sigma=0.1
+               y_sigma=0.1,
+               minibatch_size=None
                ):
 
         def body(cont, param_warmstart, hyperparams_warmstart, y_sigma):
@@ -640,7 +643,8 @@ class FreeTransitionVariationalBayes(object):
                                        num_mcmc_param_samples_learn=num_mcmc_param_samples_learn,
                                        num_mcmc_param_samples_infer=num_mcmc_param_samples_infer,
                                        solver_params=solver_params,
-                                       kernel_params = kernel_params
+                                       kernel_params = kernel_params,
+                                       minibatch_size=minibatch_size
                                        )
 
             plt_lock = Lock()
