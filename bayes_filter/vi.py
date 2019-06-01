@@ -687,12 +687,12 @@ class VariationalBayes(object):
 
         # scalar
         elbo = var_exp*self._scale - dtec_prior_KL
-        with tf.control_dependencies([tf.print('elbo', elbo,
-                                               'var_exp', var_exp, 'dtec_prior', dtec_prior_KL,
-                                               'amp', amp, 'lengthscales', lengthscales, 'a', a, 'b', b, 'timescale',
-                                               timescale, 'y_sigma', self._y_sigma)]):
+        # with tf.control_dependencies([tf.print('elbo', elbo,
+        #                                        'var_exp', var_exp, 'dtec_prior', dtec_prior_KL,
+        #                                        'amp', amp, 'lengthscales', lengthscales, 'a', a, 'b', b, 'timescale',
+        #                                        timescale, 'y_sigma', self._y_sigma)]):
 
-            loss = tf.math.negative(elbo, name='loss')
+        loss = tf.math.negative(elbo, name='loss')
         return loss
 
     def _dtec_prior_kl(self, q_mean,  q_sqrt, L):
