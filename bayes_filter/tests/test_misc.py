@@ -8,7 +8,7 @@ import tensorflow as tf
 from bayes_filter import jitter
 from bayes_filter.misc import (random_sample, flatten_batch_dims, load_array_file, timer, diagonal_jitter,
     log_normal_solve_fwhm,make_example_datapack, maybe_create_posterior_solsets, graph_store_get,graph_store_set,
-                               safe_cholesky)
+                               safe_cholesky, get_screen_directions)
 
 def test_getset_graph_ops(tf_graph):
     a = tf.constant(0)
@@ -16,7 +16,8 @@ def test_getset_graph_ops(tf_graph):
     a_out = graph_store_get('a',tf_graph)
     assert a == a_out
 
-
+def test_get_screen_directions():
+    get_screen_directions('/home/albert/ftp/image.pybdsm.srl.fits')
 
 
 def test_random_sample(tf_session):
