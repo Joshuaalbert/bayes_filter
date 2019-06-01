@@ -23,7 +23,7 @@ if __name__ == '__main__':
 
     patch_names, _ = datapack.directions
     _, screen_directions = datapack.get_directions(patch_names)
-    maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', screen_directions=screen_directions)
+    maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', srl_file='/home/albert/ftp/image.pybdsm.srl.fits')#screen_directions=screen_directions,
 
     sess = tf.Session(graph=tf.Graph())
     # from tensorflow.python import debug as tf_debug
