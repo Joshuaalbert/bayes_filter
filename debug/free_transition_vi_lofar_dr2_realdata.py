@@ -30,7 +30,7 @@ if __name__ == '__main__':
     # from tensorflow.python import debug as tf_debug
     # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
     with sess:
-        with tf.device('/cpu:0'):
+        with tf.device('/device:CPU:0'):
             logging.info("Setting up the index and datapack feeds.")
             datapack_feed = DatapackFeed(datapack,
                                          selection={'ant': list(range(1,7,2)) + list(range(45, 62, 1)),'dir':None, 'pol':slice(0,1,1), 'time':slice(0,None,1)},

@@ -756,7 +756,7 @@ class VariationalBayes(object):
         # TODO: speed up kernel computation ^^ help
         # TODO: fix screen approximation
 
-        with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/cpu:0'):
+        with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
 
             [white_dtec_mean, white_dtec_scale], [hyperparams_unconstrained], loss = \
                 natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(self._loss_fn,
