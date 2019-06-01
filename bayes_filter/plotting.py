@@ -259,7 +259,7 @@ class DatapackPlotter(object):
     def plot(self, ant_sel=None, time_sel=None, freq_sel=None, dir_sel=None, pol_sel=None, fignames=None, vmin=None,
              vmax=None, mode='perantenna', observable='phase', phase_wrap=True, log_scale=False, plot_crosses=True,
              plot_facet_idx=False, plot_patchnames=False, labels_in_radec=False, show=False, plot_arrays=False,
-             solset=None, plot_screen=False, tec_eval_freq=None, **kwargs):
+             solset=None, plot_screen=False, tec_eval_freq=None, mean_residual=False, **kwargs):
         """
 
         :param ant_sel:
@@ -313,7 +313,7 @@ class DatapackPlotter(object):
                 "Applying selection: ant={},time={},freq={},dir={},pol={}".format(ant_sel, time_sel, freq_sel, dir_sel,
                                                                                   pol_sel))
             self.datapack.select(ant=ant_sel, time=time_sel, freq=freq_sel, dir=None, pol=pol_sel)
-            axes = self.datapack.__getattr__("axes_"+observable)
+            axes = self.datapack.__getattr__("axes_"+observable if 'weights_' not in observable else observable.replace('weights_','axes_'))
             full_patch_names, _ = self.datapack.get_directions(axes['dir'])
 
 
@@ -341,8 +341,10 @@ class DatapackPlotter(object):
                 freq_labels, freqs = [""], [None]
 
             if tec_eval_freq is not None:
-                phase_wrap = True
+                # phase_wrap = True
                 obs = obs * TEC_CONV / tec_eval_freq
+                if observable.startswith('weights_'):
+                    obs = np.abs(obs)
 
             if phase_wrap:
                 obs = np.angle(np.exp(1j * obs))

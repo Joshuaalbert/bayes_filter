@@ -542,7 +542,7 @@ class FreeTransitionVariationalBayes(object):
 
         t0 = timer()
         with tf.control_dependencies([t0]):
-            loss, dtec_data_dist, dtec_screen_dist, (
+            loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (
                 amp, lengthscales, a, b,
                 timescale), next_param_warmstart, next_hyperparams_warmstart = variational_bayes.solve_variational_posterior(
                 param_warmstart,
@@ -574,6 +574,16 @@ class FreeTransitionVariationalBayes(object):
         dtec_screen = dtec_screen_dist.sample(sample_params['num_mcmc_param_samples_infer'])
         dtec_screen_post = _posterior(flatten_batch_dims(dtec_screen, -1))
 
+        # S, H, N
+        dtec_basis = dtec_basis_dist.sample(sample_params['num_mcmc_param_samples_infer'])
+        dtec_basis_post = _posterior(flatten_batch_dims(dtec_basis, -1))
+        phase_basis = dtec_basis[..., None] * variational_bayes._invfreqs
+        Yreal_basis = tf.math.cos(phase_basis)
+        Yimag_basis = tf.math.sin(phase_basis)
+        next_y_sigma = 0.5 * tf.reduce_mean(
+            tf.math.abs(Yreal - tf.reduce_mean(Yreal_basis, axis=[0, 1]))) + 0.5 * tf.reduce_mean(
+            tf.math.abs(Yimag - tf.reduce_mean(Yimag_basis, axis=[0, 1])))
+
 
         # S, H, N, Nf
         phase_data = dtec_data[..., None]*variational_bayes._invfreqs
@@ -583,9 +593,7 @@ class FreeTransitionVariationalBayes(object):
         Yreal_data = tf.math.cos(phase_data)
         Yimag_data = tf.math.sin(phase_data)
 
-        next_y_sigma = 0.5 * tf.reduce_mean(
-            tf.math.abs(Yreal - tf.reduce_mean(Yreal_data, axis=[0, 1]))) + 0.5 * tf.reduce_mean(
-            tf.math.abs(Yimag - tf.reduce_mean(Yimag_data, axis=[0, 1])))
+
         eff_phase_data = tf.math.atan2(tf.reduce_mean(Yimag_data, axis=[0, 1]), tf.reduce_mean(Yreal_data, axis=[0, 1]))
 
         Yreal_screen = tf.math.cos(phase_screen)

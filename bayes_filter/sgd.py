@@ -463,12 +463,15 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
     N = tf.shape(X)[0]
 
     def _body(t, nat_params, adam_params, m, v, loss_ta, min_loss, patience):
+        if minibatch_size is not None:
+            minibatch_selection = tf.random.shuffle(tf.range(N))[:minibatch_size]
+            _X = tf.gather(X, minibatch_selection,axis=0)
+            _Y = (tf.gather(Y[0], minibatch_selection, axis=0), tf.gather(Y[1], minibatch_selection, axis=0))
+        else:
+            _X = X
+            _Y = Y
 
-        minibatch_selection = tf.random.shuffle(tf.range(N))[:minibatch_size]
-        Xmini = tf.gather(X, minibatch_selection,axis=0)
-        Ymini = (tf.gather(Y[0], minibatch_selection, axis=0), tf.gather(Y[1], minibatch_selection, axis=0))
-
-        loss = tf.reduce_mean(loss_fn(*nat_params, *adam_params, Xmini, Ymini))
+        loss = tf.reduce_mean(loss_fn(*nat_params, *adam_params, _X, _Y))
         loss_better = tf.less_equal(loss, min_loss)
         min_loss = tf.minimum(min_loss, loss)
         patience = tf.cond(loss_better, lambda: tf.constant(0, patience.dtype),
@@ -478,17 +481,17 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
 
         nat_grads = tf.gradients(loss, nat_params)
 
-        next_nat_params = _natgrad_update(nat_grads, nat_params, adam_params,loss, t, Xmini, Ymini)
+        next_nat_params = _natgrad_update(nat_grads, nat_params, adam_params,loss, t, _X, _Y)
 
         adam_grads = tf.gradients(loss, adam_params)
 
-        next_adam_params, next_m, next_v = _adam_update(adam_grads, adam_params, nat_params, m, t, v, loss, Xmini, Ymini)
+        next_adam_params, next_m, next_v = _adam_update(adam_grads, adam_params, nat_params, m, t, v, loss, _X, _Y)
         [n.set_shape(p.shape) for n, p in zip(next_adam_params, adam_params)]
         [n.set_shape(p.shape) for n, p in zip(next_nat_params, nat_params)]
 
         return t+1, next_nat_params, next_adam_params, next_m, next_v, loss_ta, min_loss, patience
 
-    def _natgrad_update(nat_grads, nat_params, adam_params, loss0, t, Xmini, Ymini):
+    def _natgrad_update(nat_grads, nat_params, adam_params, loss0, t, X, Y):
         q_mean, q_scale = nat_params
         q_sqrt = tf.nn.softplus(q_scale)
         diag_F_q_mean_inv = tf.math.square(q_sqrt)
@@ -498,7 +501,7 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
             test_nat_params = [q_mean - a * diag_F_q_mean_inv * nat_grads[0], q_scale - a * diag_F_q_scale_inv * \
                                nat_grads[1]]
             #TODO: don't need to redo L because adams params fixed
-            loss = tf.reduce_mean(loss_fn(*test_nat_params, *adam_params, Xmini, Ymini))
+            loss = tf.reduce_mean(loss_fn(*test_nat_params, *adam_params, X, Y))
             return loss - loss0
 
         search_space = tf.math.exp(tf.cast(tf.linspace(tf.math.log(gamma)-7., tf.math.log(gamma), 5),float_type))
@@ -514,7 +517,7 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
 
             return next_nat_params
 
-    def _adam_update(adam_grads, adam_params, nat_params, m, t, v, loss0, Xmini, Ymini):
+    def _adam_update(adam_grads, adam_params, nat_params, m, t, v, loss0, X, Y):
         t_float = tf.cast(t, float_type) + 1.
         lr_t = tf.math.sqrt(1. - tf.math.pow(beta2, t_float)) * \
                tf.math.reciprocal(tf.math.sqrt(1. - tf.math.pow(beta1, t_float)))
@@ -539,7 +542,7 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
                     next_adam_params.append(p_t)
                     continue
                 test_adam_params.append(p_t - a * lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
-            loss = tf.reduce_mean(loss_fn(*nat_params, *test_adam_params, Xmini, Ymini))
+            loss = tf.reduce_mean(loss_fn(*nat_params, *test_adam_params, X, Y))
             return loss - loss0
 
         search_space = tf.math.exp(tf.cast(tf.linspace(tf.math.log(learning_rate) - 7., tf.math.log(learning_rate), 5), float_type))

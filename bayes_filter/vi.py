@@ -633,7 +633,7 @@ class VariationalBayes(object):
 
         return constrained_hyperparams
 
-    def _loss_fn(self, white_dtec_mean, white_dtec_scale, hyperparams_unconstrained, Xmini, Ymini):
+    def _loss_fn(self, white_dtec_mean, white_dtec_scale, hyperparams_unconstrained, X, Y):
         white_vi_params = (white_dtec_mean, white_dtec_scale)
 
         #each 1,1
@@ -648,19 +648,42 @@ class VariationalBayes(object):
                                         **self._kernel_params)
 
         q_mean = white_dtec_mean
+        q_scale = white_dtec_scale
         q_sqrt = tf.nn.softplus(white_dtec_scale)
         K_z_z = kern.K(self._Z, None)
         L_z_z = safe_cholesky(K_z_z)
-        K_z_xmini = kern.K(self._Z, Xmini)
-        K_xmini_xmini = kern.K(Xmini, None)
-        q_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_xmini_xmini, K_z_xmini)
-        dtec_samples = q_dist.sample(self._dtec_samples)
-        likelihood = LaplaceLikelihood(Ymini[0], Ymini[1], self._freqs, transform_fn=lambda x: x)
-        # TODO: derive better var_exp
-        var_exp = tf.reduce_mean(likelihood.log_prob(dtec_samples, self._y_sigma))
-
 
         dtec_prior_KL = self._dtec_prior_kl(q_mean, q_sqrt, L_z_z)
+
+        if self._minibatch_size is not None:
+            K_z_xmini = kern.K(self._Z, X)
+            K_xmini_xmini = kern.K(X, None)
+            q_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_xmini_xmini, K_z_xmini)
+            dtec_samples = q_dist.sample(self._dtec_samples)
+            likelihood = LaplaceLikelihood(Y[0], Y[1], self._freqs, transform_fn=lambda x: x)
+            # TODO: derive better var_exp
+            var_exp = tf.reduce_mean(likelihood.log_prob(dtec_samples, self._y_sigma))
+
+        else:
+            def transform_fn(white_dtec):
+                """
+                Constrain white_dtec to tec
+                L is [B, N, N]
+
+                :param white_dtec: tf.Tensor
+                    [A, N]
+                :return: tf.Tensor
+                    [A,B,N]
+                """
+                # L[d,i,j].white_dtec[b,j] -> [b,d,i]
+                # A, B, N
+                return tf.tensordot(white_dtec, L_z_z, axes=[[-1], [-1]])
+
+            white_dist = self._white_posterior._build_distribution(q_mean, q_scale)
+            # num_dtec, N
+            white_dtec = white_dist.sample(self._dtec_samples)
+            likelihood = LaplaceLikelihood(Y[0], Y[1], self._freqs, transform_fn=transform_fn)
+            var_exp = tf.reduce_mean(likelihood.log_prob(white_dtec, self._y_sigma))
 
         # scalar
         elbo = var_exp*self._scale - dtec_prior_KL
@@ -762,6 +785,7 @@ class VariationalBayes(object):
         K_z_z = kern.K(self._Z, None)
         # num_hyperparams, N, N
         L_z_z = safe_cholesky(K_z_z)
+
         # num_hyperparams, M, N
         K_z_xstar = kern.K(self._Z, self._Xstar)
         K_xstar_xstar = kern.K(self._Xstar, None)
@@ -772,7 +796,9 @@ class VariationalBayes(object):
         K_x_x = kern.K(self._X, None)
         dtec_data_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_x_x, K_z_x)
 
-        return loss, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale), (
+        dtec_basis_dist = conditional_same_points(q_mean, q_sqrt, L_z_z)
+
+        return loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale), (
         white_dtec_mean, white_dtec_scale), (hyperparams_unconstrained,)
 
 def conditional_same_points(q_mean, q_sqrt, L, prior_mean=None):

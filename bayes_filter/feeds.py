@@ -143,6 +143,7 @@ class DatapackFeed(Feed):
         self.star_coord_dim_feed = CoordinateDimFeed(self.star_coord_feed)
         self.continue_feed = ContinueFeed(self.coord_feed.time_feed)
 
+
         self.datapack_feed = tf.data.Dataset.zip((self.data_feed,
                                                   self.freq_feed.feed,
                                                   self.coord_feed.feed,
@@ -262,43 +263,17 @@ class DatapackFeed(Feed):
         data = tf.py_function(self._get_block, [index, next_index], [float_type]*2)
         return [flatten_batch_dims(d, num_batch_dims=-self.event_size) for d in data]
 
-    def get_initial_point(self):
-        index=0
-        next_index=self.time_feed.index_feed._step
-
-        self.selection['time'] = slice(index, next_index, 1)
-        with self.datapack:
-            G = []
-            for (solset, soltab) in self.data_map.items():
-                self.datapack.current_solset = solset
-                self.datapack.select(**self.selection)
-                val, axes = getattr(self.datapack, soltab)
-                _, freqs = self.datapack.get_freqs(axes['freqs'])
-                if soltab == 'phase':
-                    G.append(np.exp(1j * val))
-                elif soltab == 'amplitude':
-                    G.append(np.abs(val))
-            G = np.prod(G, axis=0)  # Npol, Nd, Na, Nf, Nt
-            G = np.transpose(G[0, ...], (3, 0, 1, 2))  # Nt, Nd, Na, Nf
-            Y_real = np.real(G)
-            Y_imag = np.imag(G)
-            dtec_init = np.arctan2(Y_imag, Y_real)*freqs/-8.448e6
-            dtec_init = np.mean(dtec_init,axis=-1)
-            return dtec_init
-
-
     def _get_block(self, index, next_index):
         index = index.numpy()
         next_index = next_index.numpy()
         index = self.index_map[index]
         next_index = self.index_map[next_index-1] +1
-        self.selection['time'] = slice(index,next_index,1)
+        self.basis_selection['time'] = slice(index,next_index,1)
         with self.datapack:
             G = []
             for (solset,soltab) in self.data_map.items():
                 self.datapack.current_solset = solset
-                self.datapack.select(**self.selection)
-
+                self.datapack.select(**self.basis_selection)
                 val, axes = getattr(self.datapack,soltab)
                 if soltab == 'phase':
                     G.append(np.exp(1j*val))
@@ -308,6 +283,7 @@ class DatapackFeed(Feed):
             G = np.transpose(G[0,...],(3,0,1,2))#Nt, Nd, Na, Nf
             Y_real = np.real(G)
             Y_imag = np.imag(G)
+            # print('Yreal', Y_real.shape)
             return Y_real, Y_imag
 
 class TimeFeed(Feed):
