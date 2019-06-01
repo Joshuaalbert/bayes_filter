@@ -446,11 +446,11 @@ class DataPack(object):
                         leaf = soltab_group._v_leaves['weight']
                     else:
                         leaf = soltab_group._v_leaves['val']
-                    out_axes = {name:vals[selection[i]] for i,(vals,name) in enumerate(zip(*self.soltab_axes(soltab)))}
+                    out_axes = {name:np.array(vals)[selection[i]] for i,(vals,name) in enumerate(zip(*self.soltab_axes(soltab)))}
                     out_vals = leaf.__getitem__(selection)
                     return out_vals, out_axes
                 else:
-                    out_axes = {name:vals[selection[i]] for i,(vals,name) in enumerate(zip(*self.soltab_axes(soltab)))}
+                    out_axes = {name:np.array(vals)[selection[i]] for i,(vals,name) in enumerate(zip(*self.soltab_axes(soltab)))}
                     return out_axes
         else:
             return object.__getattribute__(self, tab)
