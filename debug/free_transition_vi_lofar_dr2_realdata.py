@@ -30,29 +30,30 @@ if __name__ == '__main__':
     # from tensorflow.python import debug as tf_debug
     # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
     with sess:
-        logging.info("Setting up the index and datapack feeds.")
-        datapack_feed = DatapackFeed(datapack,
-                                     selection={'ant': list(range(1,7,2)) + list(range(45, 62, 1)),'dir':None, 'pol':slice(0,1,1), 'time':slice(0,None,1)},
-                                     solset='sol000',
-                                     postieror_name='posterior',
-                                     index_n=1)
+        with tf.device('/cpu:0'):
+            logging.info("Setting up the index and datapack feeds.")
+            datapack_feed = DatapackFeed(datapack,
+                                         selection={'ant': list(range(1,7,2)) + list(range(45, 62, 1)),'dir':None, 'pol':slice(0,1,1), 'time':slice(0,None,1)},
+                                         solset='sol000',
+                                         postieror_name='posterior',
+                                         index_n=1)
 
-        logging.info("Setting up the filter.")
-        free_transition = FreeTransitionVariationalBayes(datapack_feed=datapack_feed, output_folder=output_folder)
-        free_transition.init_filter()
+            logging.info("Setting up the filter.")
+            free_transition = FreeTransitionVariationalBayes(datapack_feed=datapack_feed, output_folder=output_folder)
+            free_transition.init_filter()
 
-        filter_op = free_transition.filter(
-            parallel_iterations=10,
-            kernel_params={'resolution': 4, 'fed_kernel': 'M52', 'obs_type': 'DTEC'},
-            num_parallel_filters=10,
-            solver_params=dict(iters=200,
-                               learning_rate=0.1,
-                               gamma=0.3,
-                               stop_patience=6),
-            num_mcmc_param_samples_learn=50,
-            num_mcmc_param_samples_infer=100,
-            minibatch_size=None,
-        y_sigma=0.1)
+            filter_op = free_transition.filter(
+                parallel_iterations=10,
+                kernel_params={'resolution': 4, 'fed_kernel': 'M52', 'obs_type': 'DTEC'},
+                num_parallel_filters=10,
+                solver_params=dict(iters=200,
+                                   learning_rate=0.1,
+                                   gamma=0.3,
+                                   stop_patience=6),
+                num_mcmc_param_samples_learn=50,
+                num_mcmc_param_samples_infer=100,
+                minibatch_size=None,
+            y_sigma=0.1)
 
         logging.info("Initializing the filter")
         sess.run(free_transition.initializer)
