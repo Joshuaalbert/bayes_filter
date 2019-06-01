@@ -490,6 +490,7 @@ class PlotResultsV2(Callback):
             if lock is not None:
                 lock.release()
 
+
             fignames = [os.path.join(fig_directory, "fig-{:04d}_{}_phase.png".format(i,solset)) for i in
                         range(index_start, index_end, 1)]
             if lock is not None:
@@ -529,25 +530,25 @@ class PlotResultsV2(Callback):
             # if lock is not None:
             #     lock.release()
 
-            data_posterior = "data_{}".format(posterior_name)
-            fignames = [os.path.join(fig_directory, "fig-{:04d}_{}_phase.png".format(i, data_posterior)) for i in
-                        range(index_start, index_end, 1)]
-            if lock is not None:
-                lock.acquire()
-            dp.plot(ant_sel=selection.get('ant', None),
-                    time_sel=slice(index_start, index_end, 1),
-                    freq_sel=selection.get('freq', None),
-                    dir_sel=selection.get('dir', None),
-                    pol_sel=selection.get('pol', slice(0, 1, 1)),
-                    fignames=fignames,
-                    observable='phase',
-                    phase_wrap=True,
-                    plot_facet_idx=True,
-                    labels_in_radec=True,
-                    solset=data_posterior)
-            plt.close('all')
-            if lock is not None:
-                lock.release()
+            # data_posterior = "data_{}".format(posterior_name)
+            # fignames = [os.path.join(fig_directory, "fig-{:04d}_{}_phase.png".format(i, data_posterior)) for i in
+            #             range(index_start, index_end, 1)]
+            # if lock is not None:
+            #     lock.acquire()
+            # dp.plot(ant_sel=selection.get('ant', None),
+            #         time_sel=slice(index_start, index_end, 1),
+            #         freq_sel=selection.get('freq', None),
+            #         dir_sel=selection.get('dir', None),
+            #         pol_sel=selection.get('pol', slice(0, 1, 1)),
+            #         fignames=fignames,
+            #         observable='phase',
+            #         phase_wrap=True,
+            #         plot_facet_idx=True,
+            #         labels_in_radec=True,
+            #         solset=data_posterior)
+            # plt.close('all')
+            # if lock is not None:
+            #     lock.release()
 
             data_posterior = "data_{}".format(posterior_name)
             fignames = [os.path.join(fig_directory, "fig-{:04d}_{}_tec_144MHz.png".format(i, data_posterior)) for i in
@@ -570,26 +571,26 @@ class PlotResultsV2(Callback):
             if lock is not None:
                 lock.release()
 
-            data_posterior = "data_{}".format(posterior_name)
-            fignames = [os.path.join(fig_directory, "fig-{:04d}_{}_tec_144MHz_uncert.png".format(i, data_posterior)) for i in
-                        range(index_start, index_end, 1)]
-            if lock is not None:
-                lock.acquire()
-            dp.plot(ant_sel=selection.get('ant', None),
-                    time_sel=slice(index_start, index_end, 1),
-                    freq_sel=selection.get('freq', None),
-                    dir_sel=selection.get('dir', None),
-                    pol_sel=selection.get('pol', slice(0, 1, 1)),
-                    fignames=fignames,
-                    observable='weights_tec',
-                    tec_eval_freq=144e6,
-                    phase_wrap=False,
-                    plot_facet_idx=True,
-                    labels_in_radec=True,
-                    solset=data_posterior)
-            plt.close('all')
-            if lock is not None:
-                lock.release()
+            # data_posterior = "data_{}".format(posterior_name)
+            # fignames = [os.path.join(fig_directory, "fig-{:04d}_{}_tec_144MHz_uncert.png".format(i, data_posterior)) for i in
+            #             range(index_start, index_end, 1)]
+            # if lock is not None:
+            #     lock.acquire()
+            # dp.plot(ant_sel=selection.get('ant', None),
+            #         time_sel=slice(index_start, index_end, 1),
+            #         freq_sel=selection.get('freq', None),
+            #         dir_sel=selection.get('dir', None),
+            #         pol_sel=selection.get('pol', slice(0, 1, 1)),
+            #         fignames=fignames,
+            #         observable='weights_tec',
+            #         tec_eval_freq=144e6,
+            #         phase_wrap=False,
+            #         plot_facet_idx=True,
+            #         labels_in_radec=True,
+            #         solset=data_posterior)
+            # plt.close('all')
+            # if lock is not None:
+            #     lock.release()
 
             screen_posterior = "screen_{}".format(posterior_name)
             fignames = [os.path.join(fig_directory, "fig-{:04d}_{}_tec_144MHz.png".format(i, screen_posterior)) for i in
