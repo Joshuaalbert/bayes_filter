@@ -737,7 +737,7 @@ class FreeTransitionVariationalBayes(object):
             [n.set_shape(p.shape) for n,p in zip(next_param_warmstart, param_warmstart)]
             [n.set_shape(p.shape) for n, p in zip(hyperparams_warmstart, hyperparams_warmstart)]
 
-            with tf.control_dependencies([store_op]):#,performance_op, plotres_op]):
+            with tf.control_dependencies([tf.print("Iter:", results.index), store_op]):#,performance_op, plotres_op]):
                 return [tf.identity(results.cont), next_param_warmstart, next_hyperparams_warmstart, results.next_y_sigma]
 
         def cond(cont, param_warmstart, hyperparams_warmstart, y_sigma):
