@@ -756,17 +756,17 @@ class VariationalBayes(object):
         # TODO: speed up kernel computation ^^ help
         # TODO: fix screen approximation
 
-        with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
+        # with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
 
-            [white_dtec_mean, white_dtec_scale], [hyperparams_unconstrained], loss = \
-                natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(self._loss_fn,
-                                                                                   self._X,
-                                                                                   (self._Yreal, self._Yimag),
-                                                                                   self._minibatch_size,
-                                                                                   [white_dtec_mean, white_dtec_scale],
-                                                                                   [hyperparams_unconstrained],
-                                                                                   parallel_iterations=parallel_iterations,
-                                                                                   **solver_params)
+        [white_dtec_mean, white_dtec_scale], [hyperparams_unconstrained], loss = \
+            natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(self._loss_fn,
+                                                                               self._X,
+                                                                               (self._Yreal, self._Yimag),
+                                                                               self._minibatch_size,
+                                                                               [white_dtec_mean, white_dtec_scale],
+                                                                               [hyperparams_unconstrained],
+                                                                               parallel_iterations=parallel_iterations,
+                                                                               **solver_params)
         ###
         # produce the posterior distributions needed
 
