@@ -567,7 +567,7 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
 
     loss_ta = tf.TensorArray(dtype=float_type, size=iters, infer_shape=False,element_shape=())
 
-    _, nat_params, adam_params, m, v, loss_ta, _, _ = tf.while_loop(_cond,
+    t, nat_params, adam_params, m, v, loss_ta, _, _ = tf.while_loop(_cond,
                                     _body,
                                     (tf.constant(0, dtype=tf.int32),
                                      nat_params,
@@ -581,4 +581,4 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
                                     back_prop=False,
                                     return_same_structure=True)
 
-    return nat_params, adam_params, loss_ta.stack()
+    return nat_params, adam_params, loss_ta.stack(), t

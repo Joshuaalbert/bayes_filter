@@ -542,7 +542,7 @@ class FreeTransitionVariationalBayes(object):
 
         t0 = timer()
         with tf.control_dependencies([t0]):
-            loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (
+            t, loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (
                 amp, lengthscales, a, b,
                 timescale), next_param_warmstart, next_hyperparams_warmstart = variational_bayes.solve_variational_posterior(
                 param_warmstart,
@@ -616,7 +616,7 @@ class FreeTransitionVariationalBayes(object):
 
         Performance = namedtuple('Performance',['loss'])
 
-        FilterResult = namedtuple('FilterResult', ['performance','data_posterior', 'screen_posterior', 'solved_hyperparams','next_param_warmstart','next_hyperparams_warmstart','next_y_sigma','index', 'next_index', 'mean_time','cont'])
+        FilterResult = namedtuple('FilterResult', ['performance','data_posterior', 'screen_posterior', 'solved_hyperparams','next_param_warmstart','next_hyperparams_warmstart','next_y_sigma','index', 'next_index', 'mean_time', 't','cont'])
 
 
         output = FilterResult(
@@ -630,6 +630,7 @@ class FreeTransitionVariationalBayes(object):
             index=index,
             next_index=next_index,
             mean_time=tf.reduce_mean(X[:,0]),
+            t=t,
             cont=cont)
         return output
 
@@ -643,6 +644,8 @@ class FreeTransitionVariationalBayes(object):
                y_sigma=0.1,
                minibatch_size=None
                ):
+
+        t0 = timer()
 
         def body(cont, param_warmstart, hyperparams_warmstart, y_sigma):
             results = self.filter_step(param_warmstart, hyperparams_warmstart,
@@ -737,21 +740,34 @@ class FreeTransitionVariationalBayes(object):
             [n.set_shape(p.shape) for n,p in zip(next_param_warmstart, param_warmstart)]
             [n.set_shape(p.shape) for n, p in zip(hyperparams_warmstart, hyperparams_warmstart)]
 
-            with tf.control_dependencies([tf.print("Iter:", results.index), store_op]):#,performance_op, plotres_op]):
-                return [tf.identity(results.cont), next_param_warmstart, next_hyperparams_warmstart, results.next_y_sigma]
+            t1 = timer()
+            dt = t1 - t0
+            avg_rate = dt/ tf.cast(results.next_index, dt.dtype)
+            inst_rate = dt/tf.cast(results.next_index - results.index, dt.dtype)
+            iter_rate = dt/tf.cast(results.t, dt.dtype)
+            time_left = avg_rate * tf.cast(self.datapack_feed.index_feed._end - results.next_index, dt.dtype)
+
+            with tf.control_dependencies([tf.print("Iter:", results.index,
+                                                   "Time left:", time_left, "[seconds]",
+                                                   "Inst. rate:", inst_rate, "[seconds / timestep]",
+                                                   "Solver rate:", iter_rate, "[seconds / solver step]"),
+                                          store_op]):  # ,performance_op, plotres_op]):
+                return [tf.identity(results.cont), next_param_warmstart, next_hyperparams_warmstart,
+                        results.next_y_sigma]
 
         def cond(cont, param_warmstart, hyperparams_warmstart, y_sigma):
             return cont
 
         self._init_y_sigma = tf.convert_to_tensor(y_sigma, float_type, name='y_sigma_init')
 
-        cont, params_out, hyperparams_out, _ = tf.while_loop(cond,
-                      body,
-                      [tf.constant(True),
-                       self.init_params,
-                       self.init_hyperparams,
-                       self._init_y_sigma
-                      ],
-                      parallel_iterations=int(num_parallel_filters))
+        with tf.control_dependencies([t0]):
+            cont, params_out, hyperparams_out, _ = tf.while_loop(cond,
+                          body,
+                          [tf.constant(True),
+                           self.init_params,
+                           self.init_hyperparams,
+                           self._init_y_sigma
+                          ],
+                          parallel_iterations=int(num_parallel_filters))
 
         return tf.group([cont, params_out, hyperparams_out])
