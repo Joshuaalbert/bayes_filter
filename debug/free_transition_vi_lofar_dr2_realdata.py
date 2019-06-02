@@ -8,7 +8,7 @@ from bayes_filter.datapack import DataPack, _load_array_file
 import numpy as np
 
 if __name__ == '__main__':
-    output_folder = os.path.join(os.path.abspath('test_filter_vi_P126+65'), 'run14')
+    output_folder = os.path.join(os.path.abspath('test_filter_vi_P126+65'), 'run15')
     os.makedirs(output_folder, exist_ok=True)
     # datapack = make_example_datapack(5, 10, 2, name=os.path.join(output_folder, 'test_data.h5'), gain_noise=0.3,
     #                                  index_n=1, obs_type='DTEC', clobber=True,
@@ -25,8 +25,8 @@ if __name__ == '__main__':
     _, screen_directions = datapack.get_directions(patch_names)
     screen_directions = get_screen_directions('/home/albert/ftp/image.pybdsm.srl.fits', max_N=None)
     maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', screen_directions=screen_directions)
-
-    sess = tf.Session(graph=tf.Graph())
+    # config = tf.ConfigProto(allow_soft_placement = True)
+    sess = tf.Session(graph=tf.Graph())#,config=config)
     # from tensorflow.python import debug as tf_debug
     # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
     with sess:
