@@ -665,23 +665,29 @@ class VariationalBayes(object):
             var_exp = tf.reduce_mean(likelihood.log_prob(dtec_samples, self._y_sigma))
 
         else:
+            # num_dtec, num_hyperparams, N, N
+            L_expanded = tf.tile(tf.expand_dims(L_z_z, 0), [self._dtec_samples, 1, 1, 1])
             def transform_fn(white_dtec):
                 """
                 Constrain white_dtec to tec
-                L is [B, N, N]
+                L is [A, B, N, N]
 
                 :param white_dtec: tf.Tensor
-                    [A, N]
+                    [A, B, N, 1]
                 :return: tf.Tensor
                     [A,B,N]
                 """
-                # L[d,i,j].white_dtec[b,j] -> [b,d,i]
-                # A, B, N
-                return tf.tensordot(white_dtec, L_z_z, axes=[[-1], [-1]])
+                # white_dtec[a,b,j,1].L[a,b,i,j] -> white_dtec^T[a,b,1,j].L^T[a,b,j,i] -> [a,b, 1, i]
+                return tf.matmul(white_dtec, L_expanded, transpose_a=True, transpose_b=True)[:,:,0, :]
+
+                # # A, B, N
+                # return tf.tensordot(white_dtec, L_z_z, axes=[[-1], [-1]])
 
             white_dist = self._white_posterior._build_distribution(q_mean, q_scale)
             # num_dtec, N
             white_dtec = white_dist.sample(self._dtec_samples)
+            # num_dtec, 1, N, 1
+            white_dtec = white_dtec[:, None, :, None]
             likelihood = LaplaceLikelihood(Y[0], Y[1], self._freqs, transform_fn=transform_fn)
             var_exp = tf.reduce_mean(likelihood.log_prob(white_dtec, self._y_sigma))
 
@@ -756,17 +762,17 @@ class VariationalBayes(object):
         # TODO: speed up kernel computation ^^ help
         # TODO: fix screen approximation
 
-        # with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
+        with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
 
-        [white_dtec_mean, white_dtec_scale], [hyperparams_unconstrained], loss = \
-            natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(self._loss_fn,
-                                                                               self._X,
-                                                                               (self._Yreal, self._Yimag),
-                                                                               self._minibatch_size,
-                                                                               [white_dtec_mean, white_dtec_scale],
-                                                                               [hyperparams_unconstrained],
-                                                                               parallel_iterations=parallel_iterations,
-                                                                               **solver_params)
+            [white_dtec_mean, white_dtec_scale], [hyperparams_unconstrained], loss, t = \
+                natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(self._loss_fn,
+                                                                                   self._X,
+                                                                                   (self._Yreal, self._Yimag),
+                                                                                   self._minibatch_size,
+                                                                                   [white_dtec_mean, white_dtec_scale],
+                                                                                   [hyperparams_unconstrained],
+                                                                                   parallel_iterations=parallel_iterations,
+                                                                                   **solver_params)
         ###
         # produce the posterior distributions needed
 
@@ -799,7 +805,7 @@ class VariationalBayes(object):
 
         dtec_basis_dist = conditional_same_points(q_mean, q_sqrt, L_z_z)
 
-        return loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale), (
+        return t, loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale), (
         white_dtec_mean, white_dtec_scale), (hyperparams_unconstrained,)
 
 def conditional_same_points(q_mean, q_sqrt, L, prior_mean=None):
