@@ -739,15 +739,16 @@ class FreeTransitionVariationalBayes(object):
             next_param_warmstart, next_hyperparams_warmstart = results.next_param_warmstart, results.next_hyperparams_warmstart
             [n.set_shape(p.shape) for n,p in zip(next_param_warmstart, param_warmstart)]
             [n.set_shape(p.shape) for n, p in zip(hyperparams_warmstart, hyperparams_warmstart)]
-            with tf.control_dependencies([results.index]):
+            with tf.control_dependencies([results.t]):
                 t1 = timer()
-            dt = t1 - t0
-            avg_rate = dt/ tf.cast(results.next_index, dt.dtype)
-            inst_rate = dt/tf.cast(results.next_index - results.index, dt.dtype)
-            iter_rate = dt/tf.cast(results.t, dt.dtype)
-            time_left = avg_rate * tf.cast(self.datapack_feed.index_feed._end - results.next_index, dt.dtype)
+                dt = t1 - t0
+                avg_rate = dt/ tf.cast(results.next_index, dt.dtype)
+                inst_rate = dt/tf.cast(results.next_index - results.index, dt.dtype)
+                iter_rate = dt/tf.cast(results.t, dt.dtype)
+                time_left = avg_rate * tf.cast(self.datapack_feed.index_feed._end - results.next_index, dt.dtype)
 
             with tf.control_dependencies([tf.print("Iter:", results.index,
+                "Tooks:", dt, "[seconds]",
                                                    "Time left:", time_left, "[seconds]",
                                                    "Inst. rate:", inst_rate, "[seconds / timestep]",
                                                    "Solver rate:", iter_rate, "[seconds / solver step]"),
