@@ -739,7 +739,7 @@ class FreeTransitionVariationalBayes(object):
             next_param_warmstart, next_hyperparams_warmstart = results.next_param_warmstart, results.next_hyperparams_warmstart
             [n.set_shape(p.shape) for n,p in zip(next_param_warmstart, param_warmstart)]
             [n.set_shape(p.shape) for n, p in zip(hyperparams_warmstart, hyperparams_warmstart)]
-            with tf.control_dependencies([next_param_warmstart]):
+            with tf.control_dependencies([results.index]):
                 t1 = timer()
             dt = t1 - t0
             avg_rate = dt/ tf.cast(results.next_index, dt.dtype)
