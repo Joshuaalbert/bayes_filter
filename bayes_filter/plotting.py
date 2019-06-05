@@ -553,7 +553,7 @@ def plot_phase_vs_time(datapack, output_folder, solsets='sol000',
         phases = []
         stds = []
         for solset in solsets:
-            datapack.switch_solset(solset)
+            datapack.current_solset = solset
             datapack.select(ant=ant_sel, time=time_sel, dir=dir_sel, freq=freq_sel, pol=pol_sel)
             weights, axes = datapack.weights_phase
             freq_ind = len(axes['freq']) >> 1
@@ -612,7 +612,7 @@ def plot_phase_vs_time_per_datapack(datapacks, output_folder, solsets='sol000',
         with DataPack(datapack, readonly=True) as datapack:
 
             for solset in solsets:
-                datapack.switch_solset(solset)
+                datapack.current_solset = solset
                 datapack.select(ant=ant_sel, time=time_sel, dir=dir_sel, freq=freq_sel, pol=pol_sel)
                 weights, axes = datapack.weights_phase
                 freq_ind = len(axes['freq']) >> 1
