@@ -579,9 +579,9 @@ def plot_phase_vs_time(datapack, output_folder, solsets='sol000',
                             std = stds[i]
                             label = "{} {} {:.1f}MHz {}:{}".format(solset, axes['pol'][p], axes['freq'][f] / 1e6,
                                                                    axes['ant'][a], axes['dir'][d])
-                            ax.fill_between(times.mjd, phase[p, d, a, f, :] - 2 * std[p, d, a, f, :],
-                                            phase[p, d, a, f, :] + 2 * std[p, d, a, f, :], alpha=0.5,
-                                            label=r'$\pm2\hat{\sigma}_\phi$')  # ,color='blue')
+                            # ax.fill_between(times.mjd, phase[p, d, a, f, :] - 2 * std[p, d, a, f, :],
+                            #                 phase[p, d, a, f, :] + 2 * std[p, d, a, f, :], alpha=0.5,
+                            #                 label=r'$\pm2\hat{\sigma}_\phi$')  # ,color='blue')
                             ax.scatter(times.mjd, phase[p, d, a, f, :], marker='+', alpha=0.3, color='black',
                                        label=label)
 
