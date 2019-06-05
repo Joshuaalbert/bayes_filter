@@ -594,6 +594,65 @@ def plot_phase_vs_time(datapack, output_folder, solsets='sol000',
                         plt.savefig(os.path.join(output_folder, filename))
         plt.close('all')
 
+def plot_phase_vs_time_per_datapack(datapacks, output_folder, solsets='sol000',
+                       ant_sel=None, time_sel=None, dir_sel=None, freq_sel=None, pol_sel=None):
+
+    if not isinstance(solsets, (list, tuple)):
+        solsets = [solsets]
+
+    if not isinstance(datapacks, (list, tuple)):
+        datapacks = [datapacks]
+
+
+    output_folder = os.path.abspath(output_folder)
+    os.makedirs(output_folder, exist_ok=True)
+    phases = []
+    stds = []
+    for datapack in datapacks:
+        with DataPack(datapack, readonly=True) as datapack:
+
+            for solset in solsets:
+                datapack.switch_solset(solset)
+                datapack.select(ant=ant_sel, time=time_sel, dir=dir_sel, freq=freq_sel, pol=pol_sel)
+                weights, axes = datapack.weights_phase
+                freq_ind = len(axes['freq']) >> 1
+                freq = axes['freq'][freq_ind]
+                ant = axes['ant'][0]
+                phase, _ = datapack.phase
+                std = np.sqrt(np.abs(weights))
+                timestamps, times = datapack.get_times(axes['time'])
+                phases.append(phase)
+                stds.append(std)
+        for phase in phases:
+            for s, S in zip(phase.shape, phases[0].shape):
+                assert s == S
+        Npol, Nd, Na, Nf, Nt = phases[0].shape
+        fig, ax = plt.subplots()
+        for p in range(Npol):
+            for d in range(Nd):
+                for a in range(Na):
+                    for f in range(Nf):
+                        ax.cla()
+                        for i, solset in enumerate(solsets):
+                            phase = phases[i]
+                            std = stds[i]
+                            label = "{} {} {} {:.1f}MHz {}:{}".format(os.path.basename(datapacks[i]), solset, axes['pol'][p], axes['freq'][f] / 1e6,
+                                                                   axes['ant'][a], axes['dir'][d])
+                            # ax.fill_between(times.mjd, phase[p, d, a, f, :] - 2 * std[p, d, a, f, :],
+                            #                 phase[p, d, a, f, :] + 2 * std[p, d, a, f, :], alpha=0.5,
+                            #                 label=r'$\pm2\hat{\sigma}_\phi$')  # ,color='blue')
+                            ax.scatter(times.mjd, phase[p, d, a, f, :], marker='+', alpha=0.3,
+                                       label=label)
+
+                        ax.set_xlabel('Time [mjd]')
+                        ax.set_ylabel('Phase deviation [rad.]')
+                        ax.legend()
+                        filename = "{}_{}_{}_{}MHz.png".format(axes['ant'][a], axes['dir'][d], axes['pol'][p],
+                                                               axes['freq'][f] / 1e6)
+
+                        plt.savefig(os.path.join(output_folder, filename))
+        plt.close('all')
+
 
 def plot_data_vs_solution(datapack, output_folder, data_solset='sol000', solution_solset='posterior_sol',
                           show_prior_uncert=False,
