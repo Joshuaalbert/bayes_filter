@@ -582,7 +582,7 @@ def plot_phase_vs_time(datapack, output_folder, solsets='sol000',
                             # ax.fill_between(times.mjd, phase[p, d, a, f, :] - 2 * std[p, d, a, f, :],
                             #                 phase[p, d, a, f, :] + 2 * std[p, d, a, f, :], alpha=0.5,
                             #                 label=r'$\pm2\hat{\sigma}_\phi$')  # ,color='blue')
-                            ax.scatter(times.mjd, phase[p, d, a, f, :], marker='+', alpha=0.3, color='black',
+                            ax.scatter(times.mjd, phase[p, d, a, f, :], marker='+', alpha=0.3,
                                        label=label)
 
                         ax.set_xlabel('Time [mjd]')
@@ -590,6 +590,7 @@ def plot_phase_vs_time(datapack, output_folder, solsets='sol000',
                         ax.legend()
                         filename = "{}_{}_{}_{}MHz.png".format(axes['ant'][a], axes['dir'][d], axes['pol'][p],
                                                                axes['freq'][f] / 1e6)
+
                         plt.savefig(os.path.join(output_folder, filename))
         plt.close('all')
 
