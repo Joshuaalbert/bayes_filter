@@ -5,8 +5,7 @@ from .misc import flatten_batch_dims, make_coord_array, graph_store_set
 from .datapack import DataPack
 from .settings import dist_type,angle_type
 from bayes_filter.coord_transforms import tf_coord_transform, itrs_to_enu_with_references, ITRSToENUWithReferences
-
-
+from . import logging
 
 def init_feed(feed):
     """
@@ -96,7 +95,7 @@ class DataFeed(Feed):
 
 class DatapackFeed(Feed):
     def __init__(self,  datapack:DataPack, solset='sol000', postieror_name='posterior',
-                 selection = {}, ref_ant=None, ref_dir=None, index_feed:IndexFeed = None, index_n:int = None, event_size=1, num_parallel_calls=10):
+                 selection = {}, ref_ant=None, ref_dir=None, index_feed:IndexFeed = None, index_n:int = None, event_size=1, basis_ant_dist_cutoff=0.1, num_parallel_calls=10):
         """
         Create a time feed
         :param index_feed: IndexFeed
@@ -114,6 +113,7 @@ class DatapackFeed(Feed):
         self.event_size = tf.convert_to_tensor(event_size, tf.int32)
         self.index_feed = index_feed
         self.index_n = index_n
+        self.basis_ant_dist_cutoff = basis_ant_dist_cutoff
         self.datapack = datapack
         self.basis_selection = selection
         self.selection = self.basis_selection.copy()
@@ -213,6 +213,13 @@ class DatapackFeed(Feed):
         coords = self._get_coords(solset, soltab, selection)
         ref_ant = coords['Xa'][0, :]
         ref_dir = np.mean(coords['Xd'], axis=0)
+
+        keep = []
+        for i in range(coords['Xa'].shape[0]):
+            if np.all(np.linalg.norm(coords['Xa'][i:i + 1, :] - coords['Xa'][keep, :], axis=1) > self.basis_ant_dist_cutoff):
+                keep.append(i)
+        logging.info("Training on antennas: {}".format(keep))
+        self. basis_selection['ant'] = keep
 
         basis_coords = self._get_coords(solset, soltab, self.basis_selection)
         Xt = basis_coords['Xt']

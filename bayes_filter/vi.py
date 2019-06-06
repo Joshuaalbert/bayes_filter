@@ -758,9 +758,7 @@ class VariationalBayes(object):
                     lambda: (white_dtec_mean, white_dtec_scale),
                     lambda: param_warmstart, strict=True)
 
-        # TODO: mini batch and choose larger basis
-        # TODO: speed up kernel computation ^^ help
-        # TODO: fix screen approximation
+        # TODO: speed up kernel computation
 
         with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
 

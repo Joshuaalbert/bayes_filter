@@ -11,11 +11,11 @@ from tensorflow_probability.python.positive_semidefinite_kernels.internal import
 
 
 def _validate_arg_if_not_none(arg, assertion, validate_args):
-  if arg is None:
-    return arg
-  with tf.control_dependencies([assertion(arg)] if validate_args else []):
-    result = tf.identity(arg)
-  return result
+    if arg is None:
+        return arg
+    with tf.control_dependencies([assertion(arg)] if validate_args else []):
+        result = tf.identity(arg)
+    return result
 
 class Histogram(tfp.positive_semidefinite_kernels.PositiveSemidefiniteKernel):
     def __init__(self,heights,edgescales=None, lengthscales=None,feature_ndims=1, validate_args=False,name='Histogram'):

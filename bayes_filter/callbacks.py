@@ -897,3 +897,40 @@ class PlotELBO(Callback):
             return [np.array(1).astype(np.int64)]
 
         return plot_results
+
+
+class StorePerformance(Callback):
+    def __init__(self, store_file):
+        super(StorePerformance, self).__init__(store_file=store_file)
+
+    def generate(self, store_file):
+
+        if not isinstance(store_file, str):
+            raise ValueError("store_file should be str {}".format(type(store_file)))
+
+        store_file=os.path.abspath(store_file)
+        if not os.path.exists(store_file):
+            np.savez(store_file, index=np.array([]), loss= [], iter_time=np.array([]), num_steps=np.array([]))
+
+
+        self.output_dtypes = [tf.int64]
+        self.name = 'StorePerformance'
+
+        def store(index, loss, iter_time, num_steps):
+            data = np.load(store_file)
+
+            index = np.array([index] + list(data['index']))
+            loss = np.array([np.reshape(loss,(-1,))] + list(data['loss']))
+            iter_time = np.array([iter_time] + list(data['iter_time']))
+            num_steps = np.array([num_steps] + list(data['num_steps']))
+
+            np.savez(store_file,
+                     index=index,
+                     loss=loss,
+                     iter_time=iter_time,
+                     num_steps=num_steps
+                     )
+
+            return [np.array(len(index),dtype=np.int64)]
+
+        return store

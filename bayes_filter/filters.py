@@ -16,7 +16,7 @@ from .vi import VariationalBayes, WhitenedVariationalPosterior, VariationalBayes
 
 from .hyper_parameter_opt import KernelHyperparameterSolveCallback
 from .callbacks import callback_sequence, Chain, DatapackStoreCallback, GetLearnIndices, PlotResults, PlotResultsV2, \
-    StoreHyperparameters, StoreHyperparametersV2, PlotAcceptRatio, PlotEss, PlotRhat, PlotStepsizes, PlotELBO
+    StoreHyperparameters, StoreHyperparametersV2, PlotAcceptRatio, PlotEss, PlotRhat, PlotStepsizes, PlotELBO, StorePerformance
 
 SampleParams = namedtuple('SampleParams',['num_leapfrog_steps', 'num_adapation_steps', 'target_rate', 'num_samples', 'num_burnin_steps'])
 HMCParams = namedtuple('HMCParams',['amp','y_sigma', 'dtec'])
@@ -476,6 +476,10 @@ class FreeTransitionVariationalBayes(object):
         return os.path.join(self.output_folder,'hyperparam_store.npz')
 
     @property
+    def performance_store(self):
+        return os.path.join(self.output_folder, 'performance_store.npz')
+
+    @property
     def initializer(self):
         return self.init0
 
@@ -648,15 +652,28 @@ class FreeTransitionVariationalBayes(object):
         t0 = timer()
 
         def body(cont, param_warmstart, hyperparams_warmstart, y_sigma):
-            results = self.filter_step(param_warmstart, hyperparams_warmstart,
-                                       y_sigma,
-                                       parallel_iterations=int(parallel_iterations),
-                                       num_mcmc_param_samples_learn=num_mcmc_param_samples_learn,
-                                       num_mcmc_param_samples_infer=num_mcmc_param_samples_infer,
-                                       solver_params=solver_params,
-                                       kernel_params = kernel_params,
-                                       minibatch_size=minibatch_size
-                                       )
+            t1 = timer()
+            with tf.control_dependencies([t1]):
+                results = self.filter_step(param_warmstart, hyperparams_warmstart,
+                                           y_sigma,
+                                           parallel_iterations=int(parallel_iterations),
+                                           num_mcmc_param_samples_learn=num_mcmc_param_samples_learn,
+                                           num_mcmc_param_samples_infer=num_mcmc_param_samples_infer,
+                                           solver_params=solver_params,
+                                           kernel_params = kernel_params,
+                                           minibatch_size=minibatch_size
+                                           )
+
+            with tf.control_dependencies([results.data_posterior.tec]):
+                t2 = timer()
+                time_since_start = t2 - t0
+                this_step_time = t2 - t1
+                avg_rate = time_since_start / tf.cast(results.next_index, time_since_start.dtype)
+                inst_rate = this_step_time / tf.cast(results.next_index - results.index, this_step_time.dtype)
+                iter_rate = this_step_time / tf.cast(results.t, this_step_time.dtype)
+                time_left = avg_rate * tf.cast(self.datapack_feed.index_feed._end - results.next_index,
+                                               avg_rate.dtype) / 60.
+
 
             plt_lock = Lock()
             store_lock = Lock()
@@ -698,7 +715,8 @@ class FreeTransitionVariationalBayes(object):
                                       lock=store_lock,
                                       index_map=self.datapack_feed.index_map,
                                       **self.datapack_feed.screen_selection),
-                StoreHyperparametersV2(self.hyperparam_store)
+                StoreHyperparametersV2(self.hyperparam_store),
+                StorePerformance(self.performance_store)
             ]
 
             store_args = [(results.index, results.next_index,results.data_posterior.tec[None, ...]),
@@ -707,7 +725,8 @@ class FreeTransitionVariationalBayes(object):
                             (results.index, results.next_index,results.screen_posterior.tec[None, ...]),
                             (results.index, results.next_index,results.screen_posterior.phase[None, ...]),
                             (results.index, results.next_index,results.screen_posterior.weights_tec[None, ...]),
-                            (results.mean_time,) + results.solved_hyperparams + (results.next_y_sigma,)
+                            (results.mean_time,) + results.solved_hyperparams + (results.next_y_sigma,),
+                            (results.index, results.performance.loss, this_step_time, results.t)
                           ]
 
             store_op = callback_sequence(store_callbacks, store_args, async=True)
@@ -739,17 +758,11 @@ class FreeTransitionVariationalBayes(object):
             next_param_warmstart, next_hyperparams_warmstart = results.next_param_warmstart, results.next_hyperparams_warmstart
             [n.set_shape(p.shape) for n,p in zip(next_param_warmstart, param_warmstart)]
             [n.set_shape(p.shape) for n, p in zip(hyperparams_warmstart, hyperparams_warmstart)]
-            with tf.control_dependencies([results.t]):
-                t1 = timer()
-                dt = t1 - t0
-                avg_rate = dt/ tf.cast(results.next_index, dt.dtype)
-                inst_rate = dt/tf.cast(results.next_index - results.index, dt.dtype)
-                iter_rate = dt/tf.cast(results.t, dt.dtype)
-                time_left = avg_rate * tf.cast(self.datapack_feed.index_feed._end - results.next_index, dt.dtype)
+
 
             with tf.control_dependencies([tf.print("Iter:", results.index,
-                "Tooks:", dt, "[seconds]",
-                                                   "Time left:", time_left, "[seconds]",
+                                                   "Tooks:", this_step_time, "[seconds]",
+                                                   "Time left:", time_left, "[minutes]",
                                                    "Inst. rate:", inst_rate, "[seconds / timestep]",
                                                    "Solver rate:", iter_rate, "[seconds / solver step]"),
                                           store_op]):  # ,performance_op, plotres_op]):

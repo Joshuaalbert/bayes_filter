@@ -51,6 +51,8 @@ def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_na
                                 dir=patch_names)
             datapack.add_soltab('phase000', weightDtype='f64', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
                                 ant=antenna_labels, dir=patch_names)
+            datapack.add_soltab('amplitude000', weightDtype='f64', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                ant=antenna_labels, dir=patch_names)
 
             datapack.add_solset(screen_solset,
                                 array_file=DataPack.lofar_array,
@@ -60,6 +62,8 @@ def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_na
             datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
                                 dir=screen_patch_names)
             datapack.add_soltab('phase000', weightDtype='f64', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                ant=antenna_labels, dir=screen_patch_names)
+            datapack.add_soltab('amplitude000', weightDtype='f64', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
                                 ant=antenna_labels, dir=screen_patch_names)
 
             datapack.current_solset = solset
@@ -230,7 +234,7 @@ def make_example_datapack(Nd, Nf, Nt, pols=None,
         return dict(datapack=datapack, directions=directions, antennas=antennas, freqs=freqs, times=times, pols=pols, dtec=dtecs, phase=phase)
 
 
-def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/image.pybdsm.srl.fits', max_N = None):
+def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/image.pybdsm.srl.fits', flux_limit = 0.1, max_N = None, min_spacing_arcmin = 1.):
     """Given a srl file containing the sources extracted from the apparent flux image of the field,
     decide the screen directions
 
@@ -245,8 +249,8 @@ def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/imag
     arg = np.argsort(data['Total_Flux'])[::-1]
 
     #75MHz NLcore
-    exclude_radius = 7.82/2.
-    flux_limit = 0.05
+    #exclude_radius = 7.82/2.
+
 
     ra = []
     dec = []
@@ -256,34 +260,34 @@ def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/imag
             continue
         ra_ = data['RA'][i]
         dec_ = data['DEC'][i]
-        radius = np.sqrt((ra_ - 126)**2 + (dec_ - 65)**2)
-        if radius > exclude_radius:
-            continue
-        elif radius > 4.75/2.:
-            high_flux = 0.5
-            threshold = 1.
-            f_steps = 10**np.linspace(np.log10(high_flux), np.log10(np.max(data['Total_flux'])), 1000)[::-1]
-            f_spacing = 10**(np.linspace(np.log10(1./60.),np.log10(10./60.),1000))
-        elif radius > 3.56/2.:
-            high_flux = 0.1
-            threshold = 20./60.
-            f_steps = 10**np.linspace(np.log10(high_flux), np.log10(np.max(data['Total_flux'])), 1000)[::-1]
-            f_spacing = 10**(np.linspace(np.log10(1./60.),np.log10(10./60.),1000))
-        else:
-            high_flux = 0.05
-            threshold = 15./60.
-            f_steps = 10**np.linspace(np.log10(high_flux), np.log10(np.max(data['Total_flux'])), 1000)[::-1]
-            f_spacing = 10**(np.linspace(np.log10(1./60.),np.log10(10./60.),1000))
-        if data['Total_Flux'][i] > high_flux:
-            a = np.searchsorted(f_steps, data['Total_Flux'][i])-1
-            threshold = f_spacing[a]
+        # radius = np.sqrt((ra_ - 126)**2 + (dec_ - 65)**2)
+        # if radius > exclude_radius:
+        #     continue
+        # elif radius > 4.75/2.:
+        #     high_flux = 0.5
+        #     threshold = 1.
+        #     f_steps = 10**np.linspace(np.log10(high_flux), np.log10(np.max(data['Total_flux'])), 1000)[::-1]
+        #     f_spacing = 10**(np.linspace(np.log10(1./60.),np.log10(10./60.),1000))
+        # elif radius > 3.56/2.:
+        #     high_flux = 0.1
+        #     threshold = 20./60.
+        #     f_steps = 10**np.linspace(np.log10(high_flux), np.log10(np.max(data['Total_flux'])), 1000)[::-1]
+        #     f_spacing = 10**(np.linspace(np.log10(1./60.),np.log10(10./60.),1000))
+        # else:
+        #     high_flux = 0.05
+        #     threshold = 15./60.
+        #     f_steps = 10**np.linspace(np.log10(high_flux), np.log10(np.max(data['Total_flux'])), 1000)[::-1]
+        #     f_spacing = 10**(np.linspace(np.log10(1./60.),np.log10(10./60.),1000))
+        # if data['Total_Flux'][i] > high_flux:
+        #     a = np.searchsorted(f_steps, data['Total_Flux'][i])-1
+        #     threshold = f_spacing[a]
         if len(ra) == 0:
             ra.append(ra_)
             dec.append(dec_)
             idx.append(i)
             continue
         dist = np.sqrt(np.square(np.subtract(ra_, ra)) + np.square(np.subtract(dec_,dec)))
-        if np.all(dist > threshold):
+        if np.all(dist > min_spacing_arcmin/60.):
             ra.append(ra_)
             dec.append(dec_)
             idx.append(i)
@@ -319,6 +323,7 @@ def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/imag
     plt.xlabel('inter-facet distance [arcmin]')
     plt.savefig("interfacet_distance_dist.png")
     return ac.ICRS(ra=ra*au.deg, dec=dec*au.deg)
+
 
 def random_sample(t, n=None):
     """
