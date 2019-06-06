@@ -215,10 +215,10 @@ class DatapackFeed(Feed):
         ref_dir = np.mean(coords['Xd'], axis=0)
 
         keep = []
-        for i in range(coords['Xa'].shape[0]):
+        for i in range(1,coords['Xa'].shape[0]):
             if np.all(np.linalg.norm(coords['Xa'][i:i + 1, :] - coords['Xa'][keep, :], axis=1) > self.basis_ant_dist_cutoff):
                 keep.append(i)
-        logging.info("Training on antennas: {}".format(keep))
+        logging.info("Training on antennas: {}".format(len(keep)))
         self. basis_selection['ant'] = keep
 
         basis_coords = self._get_coords(solset, soltab, self.basis_selection)
