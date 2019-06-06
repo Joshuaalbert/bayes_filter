@@ -504,8 +504,8 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
             loss = tf.reduce_mean(loss_fn(*test_nat_params, *adam_params, X, Y))
             return loss - loss0
 
-        search_space = tf.math.exp(tf.cast(tf.linspace(tf.math.log(gamma)-7., tf.math.log(gamma), 5),float_type))
-        search_results = tf.map_fn(search_function, search_space, parallel_iterations=5)
+        search_space = tf.math.exp(tf.cast(tf.linspace(tf.math.log(gamma)-7., tf.math.log(gamma), 3),float_type))
+        search_results = tf.map_fn(search_function, search_space, parallel_iterations=3)
         argmin = tf.argmin(search_results)
 
         a = search_space[argmin]
@@ -545,8 +545,8 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
             loss = tf.reduce_mean(loss_fn(*nat_params, *test_adam_params, X, Y))
             return loss - loss0
 
-        search_space = tf.math.exp(tf.cast(tf.linspace(tf.math.log(learning_rate) - 7., tf.math.log(learning_rate), 5), float_type))
-        search_results = tf.map_fn(search_function, search_space, parallel_iterations=5)
+        search_space = tf.math.exp(tf.cast(tf.linspace(tf.math.log(learning_rate) - 7., tf.math.log(learning_rate), 3), float_type))
+        search_results = tf.map_fn(search_function, search_space, parallel_iterations=3)
         argmin = tf.argmin(search_results)
 
         a = search_space[argmin]
