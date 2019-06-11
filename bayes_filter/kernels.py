@@ -2,12 +2,15 @@ import tensorflow as tf
 import numpy as np
 import tensorflow_probability as tfp
 from . import KERNEL_SCALE
+from . import logging
 from .settings import float_type
 from .parameters import Parameter, ScaledPositiveBijector, SphericalToCartesianBijector
 from .quadrature import dblquad
 
 from tensorflow_probability.python.internal import dtype_util
 from tensorflow_probability.python.positive_semidefinite_kernels.internal import util
+
+from collections import OrderedDict
 
 
 def _validate_arg_if_not_none(arg, assertion, validate_args):
@@ -16,6 +19,37 @@ def _validate_arg_if_not_none(arg, assertion, validate_args):
     with tf.control_dependencies([assertion(arg)] if validate_args else []):
         result = tf.identity(arg)
     return result
+
+# class EfficientRBF(tfp.positive_semidefinite_kernels.ExponentiatedQuadratic):
+#     def __init__(self, amplitude, length_scale,feature_ndims=1, validate_args=False,name='EfficientRBF'):
+#         self.sigma = amplitude
+#         self.lengthscale = length_scale
+#         super(EfficientRBF, self).__init__(amplitude=amplitude, length_scale=length_scale, feature_ndims=feature_ndims, validate_args=validate_args,name=name)
+#
+#     @tf.custom_gradient
+#     def _apply(self, x1, x2, param_expansion_ndims=0):
+#         """
+#         k(x, y) = amplitude**2 * exp(-||x - y||**2 / (2 * length_scale**2))
+#
+#         d/d amplitude k(x,y) = 2 * amplitude * exp(-||x - y||**2 / (2 * length_scale**2))
+#         = 2 * k(x,y) / amplitude
+#
+#         d/d length_scale k(x,y) = ||x - y||**2 / length_scale**3 * amplitude**2 * exp(-||x - y||**2 / (2 * length_scale**2))
+#         = -2*log(k(x,y) / amplitude**2) *  k(x,y) / length_scale
+#
+#         :param x1:
+#         :param x2:
+#         :param param_expansion_ndims:
+#         :return:
+#         """
+#         K = super(EfficientRBF, self)._apply(x1,x2,param_expansion_ndims=param_expansion_ndims)
+#
+#         def grad(dy_amp, dy_length_scale):
+#             d_amp = 2. * K / self.amplitude
+#             d_length_scale = -2. * tf.math.log(K / tf.math.square(self.amplitude)) * K / self.length_scale
+#
+#             return d_amp * dy_amp, d_length_scale*dy_length_scale
+
 
 class Histogram(tfp.positive_semidefinite_kernels.PositiveSemidefiniteKernel):
     def __init__(self,heights,edgescales=None, lengthscales=None,feature_ndims=1, validate_args=False,name='Histogram'):
@@ -385,7 +419,7 @@ class DTECIsotropicTimeGeneral(object):
         result = None
         if self.obs_type == 'TEC':
             n = 1
-            result = K_time * I
+            result = I#*K_time
         if self.obs_type == 'DTEC':
             n = 2
         if self.obs_type == 'DDTEC':
@@ -395,7 +429,7 @@ class DTECIsotropicTimeGeneral(object):
             for i in range(n):
                 for j in range(n):
                     out.append((1. if (i + j) % 2 == 0 else -1.) * I[:, i * N:(i + 1) * N, j * Np:(j + 1) * Np])
-            result = K_time * tf.add_n(out)
+            result = tf.add_n(out)#*K_time
         if sym:
             result = 0.5 * (tf.transpose(result, (0, 2, 1)) + result)
         #num_chains, N, Np
