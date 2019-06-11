@@ -653,7 +653,7 @@ class VariationalBayes(object):
                                         squeeze=False,
                                         **self._kernel_params)
 
-        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=pert_amp[0,:],
+        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=tf.constant([2.],float_type),#pert_amp[0,:],
                                                                              length_scale=pert_dir_lengthscale[0,:])
         pert_ant_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(length_scale=pert_ant_lengthscale[0,:])
 
@@ -796,7 +796,7 @@ class VariationalBayes(object):
                                         squeeze=False,
                                         **self._kernel_params)
 
-        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=pert_amp[0,:],
+        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=tf.constant([2.],float_type),#pert_amp[0,:],
                                                                                  length_scale=pert_dir_lengthscale[0,:])
         pert_ant_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(length_scale=pert_ant_lengthscale[0,:])
 
