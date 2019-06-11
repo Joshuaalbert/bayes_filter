@@ -596,7 +596,7 @@ class VariationalBayes(object):
         else:
             self._scale = tf.constant(1., float_type)
 
-        self._white_posterior = WhitenedVariationalPosterior(event_size=self.Nz*2)
+        self._white_posterior = WhitenedVariationalPosterior(event_size=self.Nz)
 
         self._hyperparam_bijectors = [
             tfp.bijectors.Chain(
@@ -639,7 +639,7 @@ class VariationalBayes(object):
 
         return constrained_hyperparams
 
-    def _loss_fn(self, white_vi_params, hyperparams_unconstrained, X, Y):
+    def _loss_fn(self, q_mean, q_scale, hyperparams_unconstrained, X, Y):
 
 
         #each 1,1
@@ -653,16 +653,16 @@ class VariationalBayes(object):
                                         squeeze=False,
                                         **self._kernel_params)
 
-        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=pert_amp,
-                                                                             length_scale=pert_dir_lengthscale)
-        pert_ant_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(length_scale=pert_ant_lengthscale)
+        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=pert_amp[0,:],
+                                                                             length_scale=pert_dir_lengthscale[0,:])
+        pert_ant_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(length_scale=pert_ant_lengthscale[0,:])
 
         # 1, 1, Nz, Nz
         K_z_z = kern.K(self._Z, None) + pert_dir_kern.matrix(self._Z[:, 1:4], self._Z[:, 1:4])*pert_ant_kern.matrix(self._Z[:, 4:7], self._Z[:, 4:7])
         L_z_z = safe_cholesky(K_z_z)
 
 
-        q_mean, q_scale = white_vi_params
+        # q_mean, q_scale = white_vi_params
         q_sqrt = tf.nn.softplus(q_scale)
 
         dtec_prior_KL = self._dtec_prior_kl(q_mean, q_sqrt, L_z_z)
@@ -759,7 +759,7 @@ class VariationalBayes(object):
 
     def solve_variational_posterior(self, param_warmstart,
                                     solver_params=None, parallel_iterations=10):
-        param_init, hyperparams_unconstrained = self._initial_states()
+        param_init, (hyperparams_unconstrained,) = self._initial_states()
 
         param_warmstart = \
             tf.cond(tf.reduce_all(tf.equal(param_warmstart[0], 0.)),
@@ -770,13 +770,13 @@ class VariationalBayes(object):
 
         with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
 
-            learned_params, learned_hyperparams_unconstrained, loss, t = \
+            learned_params, [learned_hyperparams_unconstrained], loss, t = \
                 natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(self._loss_fn,
                                                                                    self._X,
                                                                                    (self._Yreal, self._Yimag),
                                                                                    self._minibatch_size,
                                                                                    param_warmstart,
-                                                                                   hyperparams_unconstrained,
+                                                                                   [hyperparams_unconstrained],
                                                                                    parallel_iterations=parallel_iterations,
                                                                                    **solver_params)
         ###
@@ -796,9 +796,9 @@ class VariationalBayes(object):
                                         squeeze=False,
                                         **self._kernel_params)
 
-        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=pert_amp,
-                                                                                 length_scale=pert_dir_lengthscale)
-        pert_ant_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(length_scale=pert_ant_lengthscale)
+        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=pert_amp[0,:],
+                                                                                 length_scale=pert_dir_lengthscale[0,:])
+        pert_ant_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(length_scale=pert_ant_lengthscale[0,:])
 
         # 1, 1, Nz, Nz
         K_z_z = kern.K(self._Z, None) + pert_dir_kern.matrix(self._Z[:, 1:4], self._Z[:, 1:4]) * pert_ant_kern.matrix(
