@@ -282,7 +282,7 @@ class StoreHyperparametersV2(Callback):
         self.output_dtypes = [tf.int64]
         self.name = 'StoreHyperparametersV2'
 
-        def store(time, amp, lengthscales, a, b, timescale, y_sigma,pert_amp, pert_dir_lengthscale, pert_ant_lengthscale):
+        def store(time, amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale, y_sigma):
             data = np.load(store_file)
 
             times = np.array([time] + list(data['times']))
