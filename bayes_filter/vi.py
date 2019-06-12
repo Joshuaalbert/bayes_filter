@@ -609,8 +609,10 @@ class VariationalBayes(object):
                 [tfp.bijectors.AffineScalar(scale=tf.constant(100., float_type)), tfp.bijectors.Softplus()]),
             tfp.bijectors.Chain(
                 [tfp.bijectors.AffineScalar(scale=tf.constant(50., float_type)), tfp.bijectors.Softplus()]),
+            # tfp.bijectors.Chain(
+            #     [tfp.bijectors.AffineScalar(scale=tf.constant(2., float_type)), tfp.bijectors.Softplus()]),
             tfp.bijectors.Chain(
-                [tfp.bijectors.AffineScalar(scale=tf.constant(2., float_type)), tfp.bijectors.Softplus()]),
+                [tfp.bijectors.AffineScalar(scale=tf.constant(2., float_type)), tfp.bijectors.Sigmoid()]),
             tfp.bijectors.Chain(
                 [tfp.bijectors.AffineScalar(scale=tf.constant(0.03, float_type)), tfp.bijectors.Softplus()]),
             tfp.bijectors.Chain(
