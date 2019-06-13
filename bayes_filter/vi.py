@@ -613,24 +613,14 @@ class VariationalBayes(object):
             tfp.bijectors.Chain(
                 [tfp.bijectors.AffineScalar(scale=tf.constant(100., float_type)), tfp.bijectors.Softplus()]),
             tfp.bijectors.Chain(
-                [tfp.bijectors.AffineScalar(scale=tf.constant(50., float_type)), tfp.bijectors.Softplus()]),
-            tfp.bijectors.Chain(
-                [tfp.bijectors.AffineScalar(scale=tf.constant(1.5, float_type)), tfp.bijectors.Softplus()]),
-            tfp.bijectors.Chain(
-                [tfp.bijectors.AffineScalar(scale=tf.constant(0.02, float_type)), tfp.bijectors.Softplus()]),
-            tfp.bijectors.Chain(
-                [tfp.bijectors.AffineScalar(scale=tf.constant(5., float_type)), tfp.bijectors.Softplus()])
+                [tfp.bijectors.AffineScalar(scale=tf.constant(50., float_type)), tfp.bijectors.Softplus()])
         ]
         self._hyperparam_distributions = [
+            None,#tfp.distributions.LogNormal(*log_normal_cdf_solve(2., 8., as_tensor=True), name='pert_ant_lengthscale')
             None,
             None,
             None,
-            None,
-            None,
-            tfp.distributions.LogNormal(*log_normal_cdf_solve(1.3, 1.7, as_tensor=True), name='pert_amp'),
-            tfp.distributions.LogNormal(*log_normal_cdf_solve(0.005, 0.03, as_tensor=True),
-                                        name='pert_dir_lengthscale'),
-            tfp.distributions.LogNormal(*log_normal_cdf_solve(2., 8., as_tensor=True), name='pert_ant_lengthscale')
+            None
         ]
 
     def _initial_states(self, batch_size=None):
@@ -668,11 +658,7 @@ class VariationalBayes(object):
     def _loss_fn(self, q_mean, q_scale, hyperparams_unconstrained, X, Y):
 
         #each 1,1
-        amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale = self._constrain_hyperparams(hyperparams_unconstrained)
-
-        pert_amp, pert_dir_lengthscale, pert_ant_lengthscale = tf.constant([[1.5]], float_type), \
-                                                               tf.constant([[0.015]], float_type), \
-                                                               tf.constant([[5.]], float_type)
+        amp, lengthscales, a, b, timescale = self._constrain_hyperparams(hyperparams_unconstrained)
 
         kern = DTECIsotropicTimeGeneral(variance=tf.math.square(amp),
                                         lengthscales=lengthscales,
@@ -682,12 +668,8 @@ class VariationalBayes(object):
                                         squeeze=False,
                                         **self._kernel_params)
 
-        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=pert_amp[0,:], #tf.constant([2.],float_type),
-                                                                             length_scale=pert_dir_lengthscale[0,:])
-        pert_ant_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(length_scale=pert_ant_lengthscale[0,:])
-
         # 1, 1, Nz, Nz
-        K_z_z = kern.K(self._Z, None) + pert_dir_kern.matrix(self._Z[:, 1:4], self._Z[:, 1:4])*pert_ant_kern.matrix(self._Z[:, 4:7], self._Z[:, 4:7])
+        K_z_z = kern.K(self._Z, None)
         L_z_z = safe_cholesky(K_z_z)
 
 
@@ -697,8 +679,8 @@ class VariationalBayes(object):
         dtec_prior_KL = self._dtec_prior_kl(q_mean, q_sqrt, L_z_z)
 
         if self._minibatch_size is not None:
-            K_z_xmini = kern.K(self._Z, X) + pert_dir_kern.matrix(self._Z[:, 1:4], X[:, 1:4])*pert_ant_kern.matrix(self._Z[:, 4:7], X[:, 4:7])
-            K_xmini_xmini = kern.K(X, None) + pert_dir_kern.matrix(X[:, 1:4], X[:, 1:4])*pert_ant_kern.matrix(X[:, 4:7], X[:, 4:7])
+            K_z_xmini = kern.K(self._Z, X)
+            K_xmini_xmini = kern.K(X, None)
             q_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_xmini_xmini, K_z_xmini)
             dtec_samples = q_dist.sample(self._dtec_samples)
 
@@ -734,7 +716,7 @@ class VariationalBayes(object):
             var_exp = tf.reduce_mean(likelihood.log_prob(white_dtec, self._y_sigma))
 
         # scalar
-        elbo = var_exp*self._scale - dtec_prior_KL + self._hyperparam_priors(amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale)
+        elbo = var_exp*self._scale - dtec_prior_KL + self._hyperparam_priors(amp, lengthscales, a, b, timescale)
         # with tf.control_dependencies([tf.print('elbo', elbo,
         #                                        'var_exp', var_exp, 'dtec_prior', dtec_prior_KL,
         #                                        'amp', amp, 'lengthscales', lengthscales, 'a', a, 'b', b, 'timescale',
@@ -814,12 +796,8 @@ class VariationalBayes(object):
 
 
         # each 1,1
-        amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale = self._constrain_hyperparams(
+        amp, lengthscales, a, b, timescale = self._constrain_hyperparams(
             learned_hyperparams_unconstrained)
-
-        pert_amp, pert_dir_lengthscale, pert_ant_lengthscale = tf.constant([[1.5]], float_type), \
-                                                               tf.constant([[0.015]], float_type), \
-                                                               tf.constant([[5.]],float_type)
 
         kern = DTECIsotropicTimeGeneral(variance=tf.math.square(amp),
                                         lengthscales=lengthscales,
@@ -829,20 +807,13 @@ class VariationalBayes(object):
                                         squeeze=False,
                                         **self._kernel_params)
 
-        pert_dir_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(amplitude=pert_amp[0,:],#tf.constant([2.],float_type),#
-                                                                                 length_scale=pert_dir_lengthscale[0,:])
-        pert_ant_kern = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(length_scale=pert_ant_lengthscale[0,:])
-
         # 1, 1, Nz, Nz
-        K_z_z = kern.K(self._Z, None) + pert_dir_kern.matrix(self._Z[:, 1:4], self._Z[:, 1:4]) * pert_ant_kern.matrix(
-            self._Z[:, 4:7], self._Z[:, 4:7])
+        K_z_z = kern.K(self._Z, None)
         L_z_z = safe_cholesky(K_z_z)
 
         # num_hyperparams, M, N
-        K_z_xstar = kern.K(self._Z, self._Xstar) + pert_dir_kern.matrix(self._Z[:, 1:4], self._Xstar[:, 1:4]) * pert_ant_kern.matrix(
-            self._Z[:, 4:7], self._Xstar[:, 4:7])
-        K_xstar_xstar = kern.K(self._Xstar, None)+ pert_dir_kern.matrix(self._Xstar[:, 1:4], self._Xstar[:, 1:4]) * pert_ant_kern.matrix(
-            self._Xstar[:, 4:7], self._Xstar[:, 4:7])
+        K_z_xstar = kern.K(self._Z, self._Xstar)
+        K_xstar_xstar = kern.K(self._Xstar, None)
 
         q_mean, q_scale = learned_params
         q_sqrt = tf.nn.softplus(q_scale)
@@ -850,17 +821,14 @@ class VariationalBayes(object):
         dtec_screen_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_xstar_xstar, K_z_xstar)
 
         # num_hyperparams, M, N
-        K_z_x = kern.K(self._Z, self._X) + pert_dir_kern.matrix(self._Z[:, 1:4],
-                                                                        self._X[:, 1:4]) * pert_ant_kern.matrix(
-            self._Z[:, 4:7], self._X[:, 4:7])
-        K_x_x = kern.K(self._X, None) + pert_dir_kern.matrix(self._X[:, 1:4],
-                                                                         self._X[:, 1:4]) * pert_ant_kern.matrix(
-            self._X[:, 4:7], self._X[:, 4:7])
+        K_z_x = kern.K(self._Z, self._X)
+        K_x_x = kern.K(self._X, None)
+
         dtec_data_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_x_x, K_z_x)
 
         dtec_basis_dist = conditional_same_points(q_mean, q_sqrt, L_z_z)
 
-        return t, loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale), (
+        return t, loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale), (
         q_mean, q_scale)
 
 def conditional_same_points(q_mean, q_sqrt, L, prior_mean=None):

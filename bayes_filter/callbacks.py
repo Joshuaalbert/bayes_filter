@@ -282,7 +282,7 @@ class StoreHyperparametersV2(Callback):
         self.output_dtypes = [tf.int64]
         self.name = 'StoreHyperparametersV2'
 
-        def store(time, amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale, y_sigma):
+        def store(time, amp, lengthscales, a, b, timescale, y_sigma):
             data = np.load(store_file)
 
             times = np.array([time] + list(data['times']))
@@ -292,9 +292,6 @@ class StoreHyperparametersV2(Callback):
             a = np.array([a.reshape((-1,))] + list(data['a']))
             b = np.array([b.reshape((-1,))] + list(data['b']))
             timescale = np.array([timescale.reshape((-1,))] + list(data['timescale']))
-            pert_amp = np.array([pert_amp.reshape((-1,))] + list(data['pert_amp']))
-            pert_dir_lengthscale = np.array([pert_dir_lengthscale.reshape((-1,))] + list(data['pert_dir_lengthscale']))
-            pert_ant_lengthscale = np.array([pert_ant_lengthscale.reshape((-1,))] + list(data['pert_ant_lengthscale']))
 
             np.savez(store_file,
                      times=times,
@@ -303,10 +300,7 @@ class StoreHyperparametersV2(Callback):
                      lengthscales=lengthscales,
                      a=a,
                      b=b,
-                     timescale=timescale,
-                     pert_amp=pert_amp,
-                     pert_dir_lengthscale=pert_dir_lengthscale,
-                     pert_ant_lengthscale=pert_ant_lengthscale
+                     timescale=timescale
                      )
 
             return [np.array(len(times),dtype=np.int64)]
@@ -347,7 +341,7 @@ class PlotResults(Callback):
             """
 
             data = np.load(hyperparam_store)
-            keys = ['amp','y_sigma','variance', 'lengthscales', 'a', 'b', 'timescale', 'pert_amp', 'pert_dir_lengthscale', 'pert_ant_lengthscale']
+            keys = ['amp','y_sigma','variance', 'lengthscales', 'a', 'b', 'timescale']
             if lock is not None:
                 lock.acquire()
             fig, axs = plt.subplots(len(keys),1,sharex='all', figsize=(6,len(keys)*2))
@@ -483,7 +477,7 @@ class PlotResultsV2(Callback):
             index_end = index_map[index_end-1] + 1
 
             data = np.load(hyperparam_store)
-            keys = ['amp','y_sigma', 'lengthscales', 'a', 'b', 'timescale', 'pert_amp', 'pert_dir_lengthscale', 'pert_ant_lengthscale']
+            keys = ['amp','y_sigma', 'lengthscales', 'a', 'b', 'timescale']
             if lock is not None:
                 lock.acquire()
             fig, axs = plt.subplots(len(keys),1,sharex='all', figsize=(9,len(keys)*2))
