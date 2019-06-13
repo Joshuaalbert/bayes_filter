@@ -3,7 +3,7 @@ import numpy as np
 import tensorflow_probability as tfp
 from .sgd import adam_stochastic_gradient_descent, natural_adam_stochastic_gradient_descent, natural_adam_stochastic_gradient_descent_with_linesearch, natural_adam_stochastic_gradient_descent_with_linesearch_minibatch
 from . import float_type, TEC_CONV
-from .misc import sqrt_with_finite_grads, safe_cholesky, flatten_batch_dims
+from .misc import sqrt_with_finite_grads, safe_cholesky, flatten_batch_dims, log_normal_cdf_solve
 from .kernels import DTECIsotropicTimeGeneral
 
 
@@ -414,6 +414,7 @@ class VariationalBayesZIsX(object):
 
         return constrained_hyperparams
 
+
     def _loss_fn(self, white_dtec_mean, white_dtec_scale, hyperparams_unconstrained):
         white_vi_params = (white_dtec_mean, white_dtec_scale)
 
@@ -454,6 +455,10 @@ class VariationalBayesZIsX(object):
 
         # scalar
         elbo = var_exp*self._scale - dtec_prior_KL
+
+        ###
+        # priors on parameters.
+
         with tf.control_dependencies([tf.print('elbo', elbo,
                                                'var_exp', var_exp, 'dtec_prior', dtec_prior_KL,
                                                'amp', amp, 'lengthscales', lengthscales, 'a', a, 'b', b, 'timescale',
@@ -609,14 +614,23 @@ class VariationalBayes(object):
                 [tfp.bijectors.AffineScalar(scale=tf.constant(100., float_type)), tfp.bijectors.Softplus()]),
             tfp.bijectors.Chain(
                 [tfp.bijectors.AffineScalar(scale=tf.constant(50., float_type)), tfp.bijectors.Softplus()]),
-            # tfp.bijectors.Chain(
-            #     [tfp.bijectors.AffineScalar(scale=tf.constant(2., float_type)), tfp.bijectors.Softplus()]),
             tfp.bijectors.Chain(
-                [tfp.bijectors.AffineScalar(scale=tf.constant(2., float_type)), tfp.bijectors.Sigmoid()]),
+                [tfp.bijectors.AffineScalar(scale=tf.constant(1.5, float_type)), tfp.bijectors.Softplus()]),
             tfp.bijectors.Chain(
-                [tfp.bijectors.AffineScalar(scale=tf.constant(0.03, float_type)), tfp.bijectors.Softplus()]),
+                [tfp.bijectors.AffineScalar(scale=tf.constant(0.02, float_type)), tfp.bijectors.Softplus()]),
             tfp.bijectors.Chain(
-                [tfp.bijectors.AffineScalar(scale=tf.constant(10., float_type)), tfp.bijectors.Softplus()])
+                [tfp.bijectors.AffineScalar(scale=tf.constant(5., float_type)), tfp.bijectors.Softplus()])
+        ]
+        self._hyperparam_distributions = [
+            None,
+            None,
+            None,
+            None,
+            None,
+            tfp.distributions.LogNormal(*log_normal_cdf_solve(1.3, 1.7, as_tensor=True), name='pert_amp'),
+            tfp.distributions.LogNormal(*log_normal_cdf_solve(0.005, 0.03, as_tensor=True),
+                                        name='pert_dir_lengthscale'),
+            tfp.distributions.LogNormal(*log_normal_cdf_solve(2., 8., as_tensor=True), name='pert_ant_lengthscale')
         ]
 
     def _initial_states(self, batch_size=None):
@@ -640,6 +654,16 @@ class VariationalBayes(object):
             constrained_hyperparams.append(bijector.forward(s))
 
         return constrained_hyperparams
+
+    def _hyperparam_priors(self, *constrained_hyperparams):
+        priors = []
+        for hp, bij, dist in zip(constrained_hyperparams, self._hyperparam_bijectors, self._hyperparam_distributions):
+            if dist is None:
+                continue
+            priors.append(tf.reduce_sum(dist.log_prob(hp) - bij.inverse_log_det_jacobian(hp, 1)))
+        if len(priors) == 0:
+            return tf.constant(0., float_type)
+        return tf.math.accumulate_n(priors, shape=())
 
     def _loss_fn(self, q_mean, q_scale, hyperparams_unconstrained, X, Y):
 
@@ -707,7 +731,7 @@ class VariationalBayes(object):
             var_exp = tf.reduce_mean(likelihood.log_prob(white_dtec, self._y_sigma))
 
         # scalar
-        elbo = var_exp*self._scale - dtec_prior_KL
+        elbo = var_exp*self._scale - dtec_prior_KL + self._hyperparam_priors(amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale)
         # with tf.control_dependencies([tf.print('elbo', elbo,
         #                                        'var_exp', var_exp, 'dtec_prior', dtec_prior_KL,
         #                                        'amp', amp, 'lengthscales', lengthscales, 'a', a, 'b', b, 'timescale',

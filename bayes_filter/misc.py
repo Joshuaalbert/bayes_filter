@@ -19,6 +19,7 @@ from collections import namedtuple
 from .coord_transforms import itrs_to_enu_with_references,tf_coord_transform
 from .kernels import DTECIsotropicTimeGeneral
 from .settings import angle_type, dist_type
+from scipy.special import erfinv
 
 def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_name: str,
                                    screen_directions = None, srl_file = None,
@@ -136,6 +137,18 @@ def sample_laplacian(shape, mean=0., scale=1., dtype=float_type):
     X = sample_exponential(shape, rate=1., dtype=dtype)
     Y = sample_exponential(shape, rate=1., dtype=dtype)
     return tf.convert_to_tensor(mean, dtype=dtype) +  tf.convert_to_tensor(scale, dtype=dtype) * tf.math.subtract(X,Y, name='sample_laplacian')
+
+
+def log_normal_cdf_solve(x1, x2, P1=0.05, P2=0.95, as_tensor=False):
+    a = np.sqrt(2.) * erfinv(2. * P1 - 1.)
+    b = np.sqrt(2.) * erfinv(2. * P2 - 1.)
+    log1 = np.log(x1)
+    log2 = np.log(x2)
+    mu = (a * log2 - b * log1) / (a - b)
+    sigma = (log1 - log2) / (a - b)
+    if as_tensor:
+        return tf.constant(mu, float_type, name='lognormal_mu'), tf.constant(sigma, float_type, name='lognormal_sigma')
+    return mu, sigma
 
 def make_example_datapack(Nd, Nf, Nt, pols=None,
                           index_n=1, gain_noise=0.05,
