@@ -552,14 +552,14 @@ class FreeTransitionVariationalBayes(object):
         t0 = timer()
         with tf.control_dependencies([t0]):
             t, loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (
-                amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale), \
+                amp, lengthscales, a, b, timescale), \
             next_param_warmstart = variational_bayes.solve_variational_posterior(
                 param_warmstart,
                 solver_params=solver_params,
                 parallel_iterations=parallel_iterations)
             # num_hyperparams, 6
             solved_hyperparams = (
-                amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale)
+                amp, lengthscales, a, b, timescale)
 
         def _posterior(t):
             """
