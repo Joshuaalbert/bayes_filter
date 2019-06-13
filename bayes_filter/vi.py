@@ -660,16 +660,19 @@ class VariationalBayes(object):
         for hp, bij, dist in zip(constrained_hyperparams, self._hyperparam_bijectors, self._hyperparam_distributions):
             if dist is None:
                 continue
-            priors.append(tf.reduce_sum(dist.log_prob(hp) - bij.inverse_log_det_jacobian(hp, 1)))
+            priors.append(tf.reduce_sum(dist.log_prob(hp)) - tf.reduce_sum(bij.inverse_log_det_jacobian(hp, 1)))
         if len(priors) == 0:
             return tf.constant(0., float_type)
         return tf.math.accumulate_n(priors, shape=())
 
     def _loss_fn(self, q_mean, q_scale, hyperparams_unconstrained, X, Y):
 
-
         #each 1,1
         amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale = self._constrain_hyperparams(hyperparams_unconstrained)
+
+        pert_amp, pert_dir_lengthscale, pert_ant_lengthscale = tf.constant([[1.5]], float_type), \
+                                                               tf.constant([[0.015]], float_type), \
+                                                               tf.constant([[5.]], float_type)
 
         kern = DTECIsotropicTimeGeneral(variance=tf.math.square(amp),
                                         lengthscales=lengthscales,
@@ -813,6 +816,10 @@ class VariationalBayes(object):
         # each 1,1
         amp, lengthscales, a, b, timescale, pert_amp, pert_dir_lengthscale, pert_ant_lengthscale = self._constrain_hyperparams(
             learned_hyperparams_unconstrained)
+
+        pert_amp, pert_dir_lengthscale, pert_ant_lengthscale = tf.constant([[1.5]], float_type), \
+                                                               tf.constant([[0.015]], float_type), \
+                                                               tf.constant([[5.]],float_type)
 
         kern = DTECIsotropicTimeGeneral(variance=tf.math.square(amp),
                                         lengthscales=lengthscales,
