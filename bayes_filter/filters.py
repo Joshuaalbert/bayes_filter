@@ -650,7 +650,7 @@ class FreeTransitionVariationalBayes(object):
                solver_params=None,
                num_mcmc_param_samples_learn=1,
                num_mcmc_param_samples_infer=10,
-               y_sigma=0.1,
+               y_sigma=0.043,
                minibatch_size=None
                ):
         t0 = timer()
@@ -659,7 +659,7 @@ class FreeTransitionVariationalBayes(object):
             t1 = timer()
             with tf.control_dependencies([t1]):
                 results = self.filter_step(param_warmstart,
-                                           y_sigma,
+                                           tf.constant(0.02, float_type),#y_sigma
                                            parallel_iterations=int(parallel_iterations),
                                            num_mcmc_param_samples_learn=num_mcmc_param_samples_learn,
                                            num_mcmc_param_samples_infer=num_mcmc_param_samples_infer,
