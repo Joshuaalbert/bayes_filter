@@ -78,7 +78,7 @@ if __name__ == '__main__':
     input_datapack = '/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v5.h5'
     datapack = DataPack(input_datapack)
     screen_directions = get_screen_directions('/home/albert/ftp/image.pybdsm.srl.fits', max_N=None)
-    maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', screen_directions=screen_directions)
+    maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', screen_directions=screen_directions, remake_posterior_solsets=True)
 
     datapack.current_solset = 'sol000'
     axes = datapack.axes_phase
