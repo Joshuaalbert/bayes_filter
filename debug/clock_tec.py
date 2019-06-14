@@ -74,8 +74,8 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
 
 if __name__ == '__main__':
 
-    datapack = '/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v5.h5'
-    datapack = DataPack(datapack)
+    input_datapack = '/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v5.h5'
+    datapack = DataPack(input_datapack)
     screen_directions = get_screen_directions('/home/albert/ftp/image.pybdsm.srl.fits', max_N=None)
     maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', screen_directions=screen_directions)
 
@@ -93,7 +93,7 @@ if __name__ == '__main__':
                       freq=slice(None, None, 1),
                       pol=slice(0, 1, 1))
 
-        datapack_raw = DataPack(datapack, readonly=True)
+        datapack_raw = DataPack(input_datapack, readonly=True)
         datapack_raw.current_solset = 'sol000'
         # Npol, Nd, Na, Nf, Nt
         datapack_raw.select(**select)
@@ -117,7 +117,7 @@ if __name__ == '__main__':
 
         phase = tec[..., None, :] * tec_conv + clock[..., None, :] * clock_conv
 
-        datapack_save = DataPack(datapack, readonly=False)
+        datapack_save = DataPack(input_datapack, readonly=False)
         datapack_save.current_solset = 'data_posterior'
         # Npol, Nd, Na, Nf, Nt
         datapack_save.select(**select)
