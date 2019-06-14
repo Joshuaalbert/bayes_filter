@@ -106,7 +106,7 @@ def adam_stochastic_gradient_descent_with_linesearch(
             pert_grads.append(
                 g_t + tf.constant(0.01, float_type) * tf.math.abs(g_t) * tf.random.normal(shape=tf.shape(g_t), dtype=g_t.dtype))
 
-        next_adam_params, next_m, next_v = _adam_update(adam_grads, adam_params, m, t, v, loss)
+        next_adam_params, next_m, next_v = _adam_update(pert_grads, adam_params, m, t, v, loss)
         [n.set_shape(p.shape) for n, p in zip(next_adam_params, adam_params)]
 
         return t + 1, next_adam_params, next_m, next_v, loss_ta, min_loss, patience
