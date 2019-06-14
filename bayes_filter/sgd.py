@@ -45,81 +45,138 @@ def stochastic_gradient_descent(log_prob, initial_state, iters, learning_rate=0.
     return params, loss.stack()
 
 
-def adam_stochastic_gradient_descent(loss_fn, initial_state, iters,
-                                     learning_rate=0.001,
-                                     beta1=0.9,
-                                     beta2=0.999,
-                                     epsilon=1e-8,
-                                     parallel_iterations=10,
-                                     logdir=None,
-                                     family=None):
+def adam_stochastic_gradient_descent_with_linesearch(
+        loss_fn,
+        adam_params,
+        iters=100,
+        learning_rate=0.1,
+        beta1=0.9,
+        beta2=0.999,
+        epsilon=1e-8,
+        stop_patience=3,
+        parallel_iterations=10,
+        search_size=5):
     """
 
-    :param self:
-    :param log_prob:
-    :param initial_state:
+    :param loss_fn:
+    :param adam_params:
     :param iters:
-    :param stepsizes:
     :param learning_rate:
+    :param beta1:
+    :param beta2:
+    :param epsilon:
+    :param stop_patience:
     :param parallel_iterations:
+    :param search_size:
     :return:
     """
 
     learning_rate = tf.convert_to_tensor(learning_rate, float_type, 'learning_rate')
+    stop_patience = tf.convert_to_tensor(stop_patience, tf.int32, 'stop_patience')
+    iters = tf.convert_to_tensor(iters, tf.int32, 'iters')
     beta1 = tf.convert_to_tensor(beta1, float_type, 'beta1')
     beta2 = tf.convert_to_tensor(beta2, float_type, 'beta2')
     epsilon = tf.convert_to_tensor(epsilon, float_type, 'epsilon')
 
-    list_like = isinstance(initial_state, (tuple, list))
-    if not list_like:
-        initial_state = [initial_state]
-    initial_state = list(initial_state)
+    if not isinstance(adam_params, (tuple, list)):
+        raise ValueError('adam params should be list like')
 
-    m0 = [tf.zeros_like(v) for v in initial_state]
-    v0 = [tf.zeros_like(v) for v in initial_state]
+    adam_params = list(adam_params)
 
-    def _body(t, params,  m, v, loss_ta):
-        loss = tf.reduce_mean(loss_fn(*params))
+    m0 = [tf.zeros_like(v) for v in adam_params]
+    v0 = [tf.zeros_like(v) for v in adam_params]
 
-        grads = tf.gradients(loss, params)
+    def _body(t, adam_params, m, v, loss_ta, min_loss, patience):
 
-        t = t+1.
+        loss = tf.reduce_mean(loss_fn(*adam_params))
+        loss_better = tf.less_equal(loss, min_loss)
+        min_loss = tf.minimum(min_loss, loss)
+        patience = tf.cond(loss_better, lambda: tf.constant(0, patience.dtype),
+                           lambda: patience + tf.constant(1, patience.dtype))
 
-        lr_t = learning_rate *  \
-               tf.math.sqrt(1. -  tf.math.pow(beta2, t)) * \
-               tf.math.reciprocal(tf.math.sqrt(1. -  tf.math.pow(beta1, t)))
+        loss_ta = loss_ta.write(t, loss)
 
-        next_m, next_v, next_params = [],[],[]
-        for (m_t, v_t, p_t, g_t) in zip(m, v, params, grads):
+        adam_grads = tf.gradients(loss, adam_params)
+        pert_grads = []
+        for g_t in adam_grads:
+            if g_t is None:
+                pert_grads.append(g_t)
+                continue
+            pert_grads.append(
+                g_t + tf.constant(0.01, float_type) * tf.math.abs(g_t) * tf.random.normal(shape=tf.shape(g_t)))
+
+        next_adam_params, next_m, next_v = _adam_update(adam_grads, adam_params, m, t, v, loss)
+        [n.set_shape(p.shape) for n, p in zip(next_adam_params, adam_params)]
+
+        return t + 1, next_adam_params, next_m, next_v, loss_ta, min_loss, patience
+
+    def _adam_update(adam_grads, adam_params, m, t, v, loss0):
+        t_float = tf.cast(t, float_type) + 1.
+        lr_t = tf.math.sqrt(1. - tf.math.pow(beta2, t_float)) * \
+               tf.math.reciprocal(tf.math.sqrt(1. - tf.math.pow(beta1, t_float)))
+        next_m, next_v = [], []
+        for (m_t, v_t, g_t) in zip(m, v, adam_grads):
             if g_t is None:
                 next_m.append(m_t)
                 next_v.append(v_t)
-                next_params.append(p_t)
                 continue
+
             m_t = beta1 * m_t + (1. - beta1) * g_t
             v_t = beta2 * v_t + (1. - beta2) * tf.math.square(g_t)
-            p_t = p_t - lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon)
             next_m.append(m_t)
             next_v.append(v_t)
-            next_params.append(p_t)
 
-        return t, next_params, next_m, next_v, loss_ta.write(tf.cast(t, tf.int32)-1, loss)
+            # p_t = p_t - lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon)
 
+        def search_function(a):
+            # TODO: don't need to redo predictive x because nat_params fixed
+            test_adam_params = []
+            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, adam_grads):
+                if g_t is None:
+                    test_adam_params.append(p_t)
+                    continue
+                test_adam_params.append(p_t - a * lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
+            loss = tf.reduce_mean(loss_fn(*test_adam_params))
+            return loss - loss0
 
-    loss_ta = tf.TensorArray(dtype=float_type, size=iters, infer_shape=False,element_shape=())
+        search_space = tf.math.exp(
+            tf.cast(tf.linspace(tf.math.log(learning_rate) - 7., tf.math.log(learning_rate), search_size), float_type))
+        search_results = tf.map_fn(search_function, search_space, parallel_iterations=search_size)
+        argmin = tf.argmin(search_results)
 
-    _, params, m, v, loss_ta = tf.while_loop(lambda i, *args: i < tf.cast(iters, float_type, name='iters'),
-                                    _body,
-                                    (tf.constant(0., dtype=float_type),
-                                     initial_state,
-                                     m0,
-                                     v0,
-                                     loss_ta),
-                                    parallel_iterations=parallel_iterations,
-                                    back_prop=False,
-                                    return_same_structure=True)
+        a = search_space[argmin]
+        loss_min = search_results[argmin]
 
-    return params, loss_ta.stack()
+        with tf.control_dependencies([tf.print('Step:', t, 'Optimal', 'Learning rate:', a, 'loss reduction', loss_min,
+                                               'from loss:', loss0)]):
+            next_adam_params = []
+            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, adam_grads):
+                if g_t is None:
+                    next_adam_params.append(p_t)
+                    continue
+                next_adam_params.append(p_t - a * lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
+
+        return next_adam_params, next_m, next_v
+
+    def _cond(t, adam_params, m, v, loss_ta, min_loss, patience):
+        return tf.logical_and(tf.less(patience, stop_patience), tf.less(t, iters))
+
+    loss_ta = tf.TensorArray(dtype=float_type, size=iters, infer_shape=False, element_shape=())
+
+    _, adam_params, m, v, loss_ta, _, _ = tf.while_loop(_cond,
+                                                        _body,
+                                                        (tf.constant(0, dtype=tf.int32),
+                                                         adam_params,
+                                                         m0,
+                                                         v0,
+                                                         loss_ta,
+                                                         tf.constant(np.inf, float_type),
+                                                         tf.constant(0, tf.int32)),
+                                                        parallel_iterations=parallel_iterations,
+                                                        back_prop=False,
+                                                        return_same_structure=True)
+
+    return adam_params, loss_ta.stack()
 
 
 ###
