@@ -181,6 +181,7 @@ class DataPack(object):
                 self._H.create_array(soltab_group, 'weight', obj=weights.astype(np.float64), title='Weights',atom=tb.Float64Atom())
             weight_leaf = soltab_group._v_leaves['weight']
             weight_leaf.attrs['AXES'] = ','.join(ordered_axes)
+            logging.info("Created soltab {}".format(soltab))
 
     def delete_soltab(self, soltab):
         if soltab not in self.soltabs:
