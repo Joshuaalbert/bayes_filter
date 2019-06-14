@@ -10,7 +10,7 @@ import pylab as plt
 from bayes_filter import float_type, logging
 
 
-def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2, max_iters=1000, search_size=10, stop_patience=5, num_replicates=32):
+def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2, max_iters=1000, search_size=10, stop_patience=5, patient_percentage=1e-3, num_replicates=32):
     # Npol, Nd, Na, Nf, Nt -> Nd, Na, Npol, Nt, Nf
     Yimag = np.transpose(Yimag, (1, 2, 0, 4, 3))
     Yreal = np.transpose(Yreal, (1, 2, 0, 4, 3))
@@ -58,7 +58,8 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
                                                                                           learning_rate=learning_rate,
                                                                                           iters=max_iters,
                                                                                           search_size=search_size,
-                                                                                          stop_patience=stop_patience)
+                                                                                          stop_patience=stop_patience,
+                                                                                          patient_percentage=patient_percentage)
 
         tec_shape = (Nd, Na, Npol, Nt)
         tec_perm = (2, 0, 1, 3)
@@ -110,6 +111,7 @@ if __name__ == '__main__':
                                                max_iters=1,
                                                search_size=10,
                                                stop_patience=5,
+                                               patient_percentage=1e-3,
                                                num_replicates=32)
 
         tec_conv = -8.4479745e6 / freqs[:, None]
