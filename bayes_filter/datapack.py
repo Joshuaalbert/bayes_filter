@@ -343,7 +343,7 @@ class DataPack(object):
 
     @property
     def allowed_soltabs(self):
-        return ['phase', 'amplitude', 'tec', 'scalarphase', 'coords']
+        return ['phase', 'amplitude', 'tec', 'clock']
 
     def soltab_axes(self,soltab):
         with self:
