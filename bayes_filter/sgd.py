@@ -54,6 +54,7 @@ def adam_stochastic_gradient_descent_with_linesearch(
         beta2=0.999,
         epsilon=1e-8,
         stop_patience=3,
+        patient_percentage=1e-3,
         parallel_iterations=10,
         search_size=5):
     """
@@ -89,7 +90,7 @@ def adam_stochastic_gradient_descent_with_linesearch(
     def _body(t, adam_params, m, v, loss_ta, min_loss, patience):
 
         loss = tf.reduce_mean(loss_fn(*adam_params))
-        loss_better = tf.less_equal(loss, min_loss)
+        loss_better = tf.less_equal(loss, (1. - tf.convert_to_tensor(patient_percentage, float_type)) * min_loss)
         min_loss = tf.minimum(min_loss, loss)
         patience = tf.cond(loss_better, lambda: tf.constant(0, patience.dtype),
                            lambda: patience + tf.constant(1, patience.dtype))
