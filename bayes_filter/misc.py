@@ -77,6 +77,21 @@ def dict2namedtuple(d, name="Result"):
     return res(**d)
 
 
+def vertex_find(x,y):
+    lhs = tf.stack([x*x, x, tf.ones_like(x)], axis=1)
+    rhs = y[:, None]
+    abc = tf.linalg.lstsq(lhs, rhs)
+    A,B,C=abc[0,0], abc[1,0], abc[2,0]
+    xmin = C - B*B/(4.*A)
+    ymin = A*xmin*xmin + B*xmin + C
+
+    argmin = tf.argmin(ymin)
+    def_min = x[argmin]
+
+    outside = tf.logical_or(tf.less(xmin, tf.reduce_min(x)), tf.greater(x, tf.reduce_max(x)))
+    return tf.cond(outside, lambda: (def_min, y[argmin]), lambda: (xmin, ymin), strict=True)
+
+
 # TODO: fix get set
 def graph_store_set(key, value, graph = None, name="graph_store"):
     if isinstance(key,(list,tuple)):

@@ -5,6 +5,7 @@ import numpy as np
 import tensorflow_probability as tfp
 from .callbacks import SummarySendCallback
 from collections import namedtuple
+from .misc import vertex_find
 
 
 def stochastic_gradient_descent(log_prob, initial_state, iters, learning_rate=0.1, parallel_iterations=10):
@@ -140,13 +141,18 @@ def adam_stochastic_gradient_descent_with_linesearch(
             loss = tf.reduce_mean(loss_fn(*test_adam_params))
             return loss - loss0
 
-        search_space = tf.math.exp(
-            tf.cast(tf.linspace(tf.math.log(learning_rate) - 7., tf.math.log(learning_rate), search_size), float_type))
+        log_search_space = tf.cast(tf.linspace(tf.math.log(learning_rate) - 7., tf.math.log(learning_rate), search_size), float_type)
+        search_space = tf.math.exp(log_search_space)
         search_results = tf.map_fn(search_function, search_space, parallel_iterations=search_size)
-        argmin = tf.argmin(search_results)
 
-        a = search_space[argmin]
-        loss_min = search_results[argmin]
+        (log_a, loss_min) = vertex_find(log_search_space, search_results)
+
+        a = tf.exp(log_a)
+
+        # argmin = tf.argmin(search_results)
+        #
+        # a = search_space[argmin]
+        # loss_min = search_results[argmin]
 
         with tf.control_dependencies([tf.print('Step:', t, 'Optimal', 'Learning rate:', a, 'loss reduction', loss_min,
                                                'from loss:', loss0)]):
