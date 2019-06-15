@@ -50,8 +50,8 @@ def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_na
 
             datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
                                 dir=patch_names)
-            datapack.add_soltab('clock000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels,
-                                ant=antenna_labels)
+            datapack.add_soltab('clock000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels,
+                                ant=antenna_labels, dir=patch_names)
             datapack.add_soltab('phase000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
                                 ant=antenna_labels, dir=patch_names)
             datapack.add_soltab('amplitude000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
@@ -64,8 +64,8 @@ def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_na
             screen_patch_names, _ = datapack.directions
             datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
                                 dir=screen_patch_names)
-            datapack.add_soltab('clock000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels,
-                                ant=antenna_labels)
+            datapack.add_soltab('clock000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels,
+                                ant=antenna_labels, dir=screen_patch_names)
             datapack.add_soltab('phase000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
                                 ant=antenna_labels, dir=screen_patch_names)
             datapack.add_soltab('amplitude000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
