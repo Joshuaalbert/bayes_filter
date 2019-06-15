@@ -10,7 +10,7 @@ import pylab as plt
 from bayes_filter import float_type, logging
 
 
-def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2, max_iters=1000, search_size=10, stop_patience=5, patient_percentage=1e-3, num_replicates=32):
+def infer_tec_and_clock(freqs, Yimag, Yreal, per_dir_clock=False, gain_uncert=0.02, learning_rate=0.2, max_iters=1000, search_size=10, stop_patience=5, patient_percentage=1e-3, num_replicates=32):
     # Npol, Nd, Na, Nf, Nt -> Nd, Na, Npol, Nt, Nf
     Yimag = np.transpose(Yimag, (1, 2, 0, 4, 3))
     Yreal = np.transpose(Yreal, (1, 2, 0, 4, 3))
@@ -49,9 +49,10 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
             log_prob_ = tf.accumulate_n(likelihood, shape=())
             return -tf.identity(log_prob_)
 
-        init_state = [40. * tf.random.normal((num_replicates, Nd, Nt * Na * Npol), dtype=float_type),
-                      1. * tf.random.normal((num_replicates, 1, Nt * Na * Npol), dtype=float_type)
+        init_state = [10. * tf.random.normal((num_replicates, Nd, Na*Npol*Nt), dtype=float_type),
+                      1. * tf.random.normal((num_replicates, Nd, Na*Npol*Nt), dtype=float_type)
                       ]
+        clock_shape = (Nd, Na, Npol, Nt)
 
         (final_tec, final_clock), loss = adam_stochastic_gradient_descent_with_linesearch(log_prob,
                                                                                           init_state,
@@ -61,10 +62,21 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
                                                                                           stop_patience=stop_patience,
                                                                                           patient_percentage=patient_percentage)
 
+        if not per_dir_clock:
+            init_state = [final_tec, tf.reduce_mean(final_clock, axis=1, keepdims=True)]
+            clock_shape = (1, Na, Npol, Nt)
+            (final_tec, final_clock), loss = adam_stochastic_gradient_descent_with_linesearch(log_prob,
+                                                                                              init_state,
+                                                                                              learning_rate=learning_rate,
+                                                                                              iters=max_iters,
+                                                                                              search_size=search_size,
+                                                                                              stop_patience=stop_patience,
+                                                                                              patient_percentage=patient_percentage)
+
         tec_shape = (Nd, Na, Npol, Nt)
-        tec_perm = (2, 0, 1, 3)
-        clock_shape = (1, Na, Npol, Nt)
+
         clock_perm = (2, 0, 1, 3)
+        tec_perm = (2, 0, 1, 3)
 
         (tec, clock), loss = sess.run([(final_tec + tec_init_pl, final_clock), loss],
                                       feed_dict={Yimag_pl: Yimag.astype(np.float64),
@@ -78,32 +90,44 @@ if __name__ == '__main__':
     input_datapack = '/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v5.h5'
     datapack = DataPack(input_datapack)
     screen_directions = get_screen_directions('/home/albert/ftp/image.pybdsm.srl.fits', max_N=None)
-    maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', screen_directions=screen_directions, remake_posterior_solsets=True)
+    maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', screen_directions=screen_directions, remake_posterior_solsets=False)
 
     datapack.current_solset = 'sol000'
     axes = datapack.axes_phase
     _, times = datapack.get_times(axes['time'])
     Nt = len(times)
 
+    Nt = 2
+
+
+    select = dict(dir=slice(None, None, 1),
+                  ant=slice(None, None, 1),
+                  time=slice(0, Nt, 1),
+                  freq=slice(None, None, 1),
+                  pol=slice(0, 1, 1))
+
+    datapack_raw = DataPack(input_datapack, readonly=True)
+    datapack_raw.current_solset = 'sol000'
+    # Npol, Nd, Na, Nf, Nt
+    datapack_raw.select(**select)
+    phase_raw, axes = datapack_raw.phase
+    timestamps, times = datapack_raw.get_times(axes['time'])
+    _, freqs = datapack_raw.get_freqs(axes['freq'])
+
+    Yimag_full = np.sin(phase_raw)
+    Yreal_full = np.cos(phase_raw)
+
     block_size = 1
 
+    save_tec = []
+    save_clock = []
+    save_phase = []
+
     for i in range(0, Nt, block_size):
-        select = dict(dir=slice(None, None, 1),
-                      ant=slice(None, None, 1),
-                      time=slice(i, min(i + block_size, Nt), 1),
-                      freq=slice(None, None, 1),
-                      pol=slice(0, 1, 1))
+        time_slice = slice(i, min(i+block_size, Nt), 1)
+        Yimag = Yimag_full[..., time_slice]
+        Yreal = Yreal_full[..., time_slice]
 
-        datapack_raw = DataPack(input_datapack, readonly=True)
-        datapack_raw.current_solset = 'sol000'
-        # Npol, Nd, Na, Nf, Nt
-        datapack_raw.select(**select)
-        phase_raw, axes = datapack_raw.phase
-        timestamps, times = datapack_raw.get_times(axes['time'])
-        _, freqs = datapack_raw.get_freqs(axes['freq'])
-
-        Yimag = np.sin(phase_raw)
-        Yreal = np.cos(phase_raw)
 
         tec, clock, loss = infer_tec_and_clock(freqs, Yimag, Yreal,
                                                gain_uncert=0.02,
@@ -119,10 +143,24 @@ if __name__ == '__main__':
 
         phase = tec[..., None, :] * tec_conv + clock[..., None, :] * clock_conv
 
-        datapack_save = DataPack(input_datapack, readonly=False)
-        datapack_save.current_solset = 'data_posterior'
-        # Npol, Nd, Na, Nf, Nt
-        datapack_save.select(**select)
-        datapack_save.phase = phase
-        datapack_save.tec = tec
-        datapack_save.clock = clock[:,0,:,:]
+        save_tec.append(tec)
+        save_clock.append(clock)
+        save_phase.append(phase)
+
+    save_tec = np.concatenate(save_tec, axis=-1)
+    save_clock = np.concatenate(save_clock, axis=-1)
+    save_phase = np.concatenate(save_phase, axis=-1)
+
+    select = dict(dir=slice(None, None, 1),
+                  ant=slice(None, None, 1),
+                  time=slice(0, Nt, 1),
+                  freq=slice(None, None, 1),
+                  pol=slice(0, 1, 1))
+
+    datapack_save = DataPack(input_datapack, readonly=False)
+    datapack_save.current_solset = 'data_posterior'
+    # Npol, Nd, Na, Nf, Nt
+    datapack_save.select(**select)
+    datapack_save.phase = save_phase
+    datapack_save.tec = save_tec
+    datapack_save.clock = save_clock[:,0,:,:]
