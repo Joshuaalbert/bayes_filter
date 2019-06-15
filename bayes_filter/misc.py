@@ -85,11 +85,11 @@ def vertex_find(x,y):
     xmin = C - B*B/(4.*A)
     ymin = A*xmin*xmin + B*xmin + C
 
-    argmin = tf.argmin(ymin)
+    argmin = tf.argmin(y)
     def_min = x[argmin]
 
-    outside = tf.logical_or(tf.less(xmin, tf.reduce_min(x)), tf.greater(x, tf.reduce_max(x)))
-    return tf.cond(outside, lambda: (def_min, y[argmin]), lambda: (xmin, ymin), strict=True)
+    outside = tf.logical_or(tf.less(xmin, tf.reduce_min(x)), tf.greater(xmin, tf.reduce_max(x)))
+    return tf.cond(outside, lambda: [def_min, y[argmin]], lambda: [xmin, ymin], strict=True)
 
 
 # TODO: fix get set

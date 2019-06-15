@@ -145,7 +145,7 @@ def adam_stochastic_gradient_descent_with_linesearch(
         search_space = tf.math.exp(log_search_space)
         search_results = tf.map_fn(search_function, search_space, parallel_iterations=search_size)
 
-        (log_a, loss_min) = vertex_find(log_search_space, search_results)
+        [log_a, loss_min] = vertex_find(log_search_space, search_results)
 
         a = tf.exp(log_a)
 
