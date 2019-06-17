@@ -90,7 +90,7 @@ def adam_stochastic_gradient_descent_with_linesearch(
     def _body(t, adam_params, m, v, loss_ta, min_loss, patience, lr):
 
         loss = tf.reduce_mean(loss_fn(*adam_params))
-        loss_better = tf.less_equal(loss, (1. - tf.convert_to_tensor(patience_percentage, float_type)) * min_loss)
+        loss_better = tf.less_equal(loss, min_loss - tf.convert_to_tensor(patience_percentage, float_type) * tf.math.abs(min_loss))
         min_loss = tf.minimum(min_loss, loss)
         patience = tf.cond(loss_better, lambda: tf.constant(0, patience.dtype),
                            lambda: patience + tf.constant(1, patience.dtype))
@@ -153,9 +153,9 @@ def adam_stochastic_gradient_descent_with_linesearch(
         #
         # change = tf.cond()
 
-        [log_a, loss_min] = vertex_find(log_search_space, search_results)
+        [a, loss_min] = vertex_find(search_space, search_results)
 
-        next_lr = tf.exp(log_a)
+        next_lr = a
 
         # argmin = tf.argmin(search_results)
         #
