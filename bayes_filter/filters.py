@@ -548,6 +548,15 @@ class FreeTransitionVariationalBayes(object):
         (index, next_index), (
         (Yreal, Yimag), freqs, X, Xstar, X_dim, Xstar_dim, Z, cont) = self.datapack_feed_iterator.get_next()
 
+        ###
+        # DI correction
+        phase_input = tf.math.atan2(Yimag, Yreal)
+        phase_di = phase_input[:, 14:15, :, :]
+        phase_dd = phase_input - phase_di
+        amp_input = tf.math.sqrt(tf.math.square(Yimag) + tf.math.square(Yreal))
+        Yreal = amp_input*tf.math.cos(phase_dd)
+        Yimag = amp_input*tf.math.sin(phase_dd)
+
         variational_bayes = VariationalBayes(Yreal, Yimag, freqs, X, Xstar, Z, y_sigma,
                                              num_samples=sample_params['num_mcmc_param_samples_learn'],
                                              kernel_params=kernel_params,
@@ -598,13 +607,14 @@ class FreeTransitionVariationalBayes(object):
 
         Yreal_data = tf.math.cos(phase_data)
         Yimag_data = tf.math.sin(phase_data)
-
         eff_phase_data = tf.math.atan2(tf.reduce_mean(Yimag_data, axis=0), tf.reduce_mean(Yreal_data, axis=0))
+        eff_phase_data += phase_di
 
         Yreal_screen = tf.math.cos(phase_screen)
         Yimag_screen = tf.math.sin(phase_screen)
         eff_phase_screen = tf.math.atan2(tf.reduce_mean(Yimag_screen, axis=0),
                                          tf.reduce_mean(Yreal_screen, axis=0))
+        eff_phase_screen += phase_di
 
         Posterior = namedtuple('Solutions', ['tec', 'phase', 'weights_tec', 'clock','weights_clock'])
 
