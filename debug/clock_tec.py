@@ -106,29 +106,38 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
                       1. * tf.random.normal((num_replicates, Nd, Na, Npol, Nt), dtype=float_type),
                       ]
 
-        (final_tec, final_clock), loss = adam_stochastic_gradient_descent_with_linesearch_batched(num_replicates,
-                                                                                                  neg_log_prob,
-                                                                                                  init_state,
-                                                                                                  learning_rate=learning_rate,
-                                                                                                  iters=max_iters,
-                                                                                                  stop_patience=stop_patience,
-                                                                                                  patience_percentage=patience_percentage)
+        optim_results = tfp.optimizer.differential_evolution_minimize(neg_log_prob,
+                                                                      init_state,
+                                                                      max_iterations=max_iters,
+                                                                      position_tolerance=1e-3,
+                                                                      seed=0)
 
-        final_loss = neg_log_prob(final_tec, final_clock)
-        argmin = tf.argmin(final_loss)
-        final_tec = final_tec[argmin,...]#tf.gather(final_tec, argmin, axis=0)
-        final_clock = final_clock[argmin,...]#tf.gather(final_clock, argmin, axis=0)
+        # (final_tec, final_clock), loss = adam_stochastic_gradient_descent_with_linesearch_batched(num_replicates,
+        #                                                                                           neg_log_prob,
+        #                                                                                           init_state,
+        #                                                                                           learning_rate=learning_rate,
+        #                                                                                           iters=max_iters,
+        #                                                                                           stop_patience=stop_patience,
+        #                                                                                           patience_percentage=patience_percentage)
+        #
+        #
+        #
+        # final_loss = neg_log_prob(final_tec, final_clock)
+        # argmin = tf.argmin(final_loss)
+        # final_tec = final_tec[argmin,...]#tf.gather(final_tec, argmin, axis=0)
+        # final_clock = final_clock[argmin,...]#tf.gather(final_clock, argmin, axis=0)
+
 
         clock_perm = (2, 0, 1, 3)
         tec_perm = (2, 0, 1, 3)
 
-        (tec, clock), final_loss = sess.run([(final_tec, final_clock), final_loss],
+        (tec, clock), final_loss, converged, num_eval = sess.run([optim_results.position, optim_results.objective_value, optim_results.converged, optim_results.num_iterations],
                                             feed_dict={Yimag_pl: Yimag.astype(np.float64),
                                                        Yreal_pl: Yreal.astype(np.float64),
                                                        amp_pl: amplitude,
                                                        gain_uncert_pl: gain_uncert[:, :, None, None, None]})
 
-        return tec.transpose(tec_perm), clock.transpose(clock_perm), final_loss
+        return tec.transpose(tec_perm), clock.transpose(clock_perm), final_loss, converged, num_eval
 
 
 if __name__ == '__main__':
@@ -178,7 +187,7 @@ if __name__ == '__main__':
         Yimag = Yimag_full[..., time_slice]
         Yreal = Yreal_full[..., time_slice]
 
-        tec, clock, loss = infer_tec_and_clock(freqs, Yimag, Yreal,
+        tec, clock, loss, converged, num_eval = infer_tec_and_clock(freqs, Yimag, Yreal,
                                                gain_uncert=gain_uncert,
                                                learning_rate=0.01,
                                                max_iters=2,
@@ -186,8 +195,7 @@ if __name__ == '__main__':
                                                patience_percentage=1e-6,
                                                num_replicates=200)
 
-        logging.info("Iteration {}: final loss min: {}, max: {}, median: {}".format(i, np.min(loss), np.max(loss),
-                                                                                    np.median(loss)))
+        logging.info("Iteration {}: coverged: {}, num iters: {}, final loss min: {}".format(i, converged, num_eval, loss))
 
         tec_conv = -8.4479745e6 / freqs[:, None]
         clock_conv = 2 * np.pi * freqs[:, None] * 1e-9
