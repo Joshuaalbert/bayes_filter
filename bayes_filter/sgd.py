@@ -291,7 +291,6 @@ def adam_stochastic_gradient_descent_with_linesearch_batched(
             #4
             M = tf.size(tf.shape(b))
             #s, 1, 1, 1
-            print(a,b)
             new_shape = tf.concat([tf.shape(a), tf.ones([M - N], tf.int32)], axis=0)
             expanded = tf.reshape(a, new_shape)
             return expanded * b
@@ -318,7 +317,6 @@ def adam_stochastic_gradient_descent_with_linesearch_batched(
         next_lr = tf.gather_nd(search_space, tf.stack([argmin, tf.range(tf.size(argmin, out_type=tf.int64), dtype=tf.int64)], axis=1))
         # [B]
         loss_min = tf.reduce_min(search_results, axis=0)
-        print(next_lr)
 
         with tf.control_dependencies(
                 [tf.print('Step:', t, 'Optimal', 'Learning rate:', next_lr, 'loss reduction', loss_min,

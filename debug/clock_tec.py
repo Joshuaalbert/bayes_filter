@@ -95,13 +95,15 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
 
             likelihood = tf.reduce_sum(tf.reduce_mean(Yimag_like, axis=-1) + tf.reduce_mean(Yreal_like, axis=-1),
                                        axis=[1, 2, 3, 4]) \
-                         + tf.reduce_sum(diff_clock_prior, axis=[1, 2, 3, 4]) \
-                         + tf.reduce_sum(clock_prior + tec_prior, axis=[1, 2, 3, 4])
+                         + tf.reduce_sum(clock_prior, axis=[1, 2, 3, 4])
+            # \
+                         # + tf.reduce_sum(diff_clock_prior, axis=[1, 2, 3, 4]) \
+
             loss = -likelihood
             return loss
 
         init_state = [55. * tf.random.normal((num_replicates, Nd, Na, Npol, Nt), dtype=float_type),
-                      1. * tf.random.normal((num_replicates, 1, Na, Npol, Nt), dtype=float_type),
+                      1. * tf.random.normal((num_replicates, Nd, Na, Npol, Nt), dtype=float_type),
                       ]
 
         (final_tec, final_clock), loss = adam_stochastic_gradient_descent_with_linesearch_batched(num_replicates,
@@ -112,10 +114,10 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
                                                                                                   stop_patience=stop_patience,
                                                                                                   patience_percentage=patience_percentage)
 
-        final_loss = tf.reshape(neg_log_prob(final_tec, final_clock), (num_replicates, -1))
-        argmin = tf.argmin(final_loss, axis=0)
-        final_tec = tf.gather(final_tec, argmin, axis=0)
-        final_clock = tf.gather(final_clock, argmin, axis=0)
+        final_loss = neg_log_prob(final_tec, final_clock)
+        argmin = tf.argmin(final_loss)
+        final_tec = final_tec[argmin,...]#tf.gather(final_tec, argmin, axis=0)
+        final_clock = final_clock[argmin,...]#tf.gather(final_clock, argmin, axis=0)
 
         clock_perm = (2, 0, 1, 3)
         tec_perm = (2, 0, 1, 3)
@@ -125,6 +127,7 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
                                                        Yreal_pl: Yreal.astype(np.float64),
                                                        amp_pl: amplitude,
                                                        gain_uncert_pl: gain_uncert[:, :, None, None, None]})
+
         return tec.transpose(tec_perm), clock.transpose(clock_perm), final_loss
 
 
@@ -178,7 +181,7 @@ if __name__ == '__main__':
         tec, clock, loss = infer_tec_and_clock(freqs, Yimag, Yreal,
                                                gain_uncert=gain_uncert,
                                                learning_rate=0.01,
-                                               max_iters=4000,
+                                               max_iters=2,
                                                stop_patience=50,
                                                patience_percentage=1e-6,
                                                num_replicates=200)
