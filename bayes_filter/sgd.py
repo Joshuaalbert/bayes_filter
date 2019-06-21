@@ -258,9 +258,9 @@ def adam_stochastic_gradient_descent_with_linesearch_batched(
         loss_ta = loss_ta.write(t, tf.reduce_mean(loss))
 
         adam_grads = tf.gradients(tf.reduce_sum(loss), adam_params)
-        adam_grads = [g_t + tf.constant(0.1, float_type) * tf.math.abs(g_t) * tf.random.normal(shape=tf.shape(g_t),
-                                                                                               dtype=g_t.dtype) if g_t is not None else None
-                      for g_t in adam_grads]
+        # adam_grads = [g_t + tf.constant(0.1, float_type) * tf.math.abs(g_t) * tf.random.normal(shape=tf.shape(g_t),
+        #                                                                                        dtype=g_t.dtype) if g_t is not None else None
+        #               for g_t in adam_grads]
 
         next_adam_params, next_m, next_v, next_lr = _adam_update(adam_grads, adam_params, m, t, v, loss, lr)
         [n.set_shape(p.shape) for n, p in zip(next_adam_params, adam_params)]
