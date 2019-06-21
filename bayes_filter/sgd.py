@@ -758,8 +758,8 @@ def natural_adam_stochastic_gradient_descent_with_linesearch(
 
         with tf.control_dependencies(
                 [tf.print('Step:', t, 'Optimal', 'Gamma:', next_gamma, 'loss reduction', loss_min,
-                          'from loss:', loss0, 'loss_selection',
-                          tf.stack([search_space, search_results], axis=1))]):  # , 'grads',F_inv_grads)]):
+                          'from loss:', loss0)]):#, 'loss_selection',
+                          # tf.stack([search_space, search_results], axis=1))]):  # , 'grads',F_inv_grads)]):
             next_nat_params = [(param - next_gamma * grad if grad is not None else param) for (param, grad) in
                                zip(nat_params, F_inv_grads)]
             return next_nat_params, next_gamma
@@ -815,7 +815,7 @@ def natural_adam_stochastic_gradient_descent_with_linesearch(
 
         with tf.control_dependencies(
                 [tf.print('Step:', t, 'Optimal', 'Learning rate:', next_lr, 'loss reduction', loss_min,
-                          'from loss:', loss0, 'loss_selection', tf.stack([search_space, search_results], axis=1))]):
+                          'from loss:', loss0)]):#, 'loss_selection', tf.stack([search_space, search_results], axis=1))]):
             next_adam_params = []
             for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, scaled_grads):
                 if g_t is None:
