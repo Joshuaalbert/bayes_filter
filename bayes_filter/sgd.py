@@ -142,27 +142,27 @@ def adam_stochastic_gradient_descent_with_linesearch(
             return loss - loss0
 
         log_search_space = tf.math.log(lr) + tf.constant([log_step,0., -log_step], float_type)
-            # tf.linspace(tf.math.log(learning_rate) - 7., tf.math.log(learning_rate), search_size), float_type)
 
-        # log_search_space = tf.cast(tf.linspace(tf.math.log(learning_rate) - 7., tf.math.log(learning_rate), search_size), float_type)
         search_space = tf.math.exp(log_search_space)
         search_results = tf.map_fn(search_function, search_space, parallel_iterations=3)
 
-        # smaller_better = tf.less(search_results[2], search_results[1])
-        # larger_better = tf.less(search_results[0], search_results[1])
-        # none_better = tf.logical_not(tf.logical_or(smaller_better, larger_better))
-        #
-        # change = tf.cond()
-
-        # [a, loss_min] = vertex_find(search_space, search_results)
-
-
 
         argmin = tf.argmin(search_results)
-
-        a = search_space[argmin]
+        next_lr = search_space[argmin]
         loss_min = search_results[argmin]
-        next_lr = a
+
+        alt_log_search_space = tf.math.log(lr) + tf.constant([3, 2, 1, -1, -2, -3], float_type)
+        alt_search_space = tf.math.exp(alt_log_search_space)
+        alt_search_results = tf.map_fn(search_function, alt_search_space, parallel_iterations=3)
+
+        alt_argmin = tf.argmin(alt_search_results)
+        alt_next_lr = alt_search_space[argmin]
+        alt_loss_min = alt_search_results[argmin]
+
+        next_lr = tf.cond(tf.greater_equal(loss_min, tf.constant(0., float_type)), lambda: alt_next_lr,
+                          lambda: next_lr)
+        loss_min = tf.cond(tf.greater_equal(loss_min, tf.constant(0., float_type)), lambda: alt_loss_min,
+                           lambda: loss_min)
 
         with tf.control_dependencies([tf.print('Step:', t, 'Optimal', 'Learning rate:', next_lr, 'loss reduction', loss_min,
                                                'from loss:', loss0)]):
@@ -320,7 +320,7 @@ def natural_adam_stochastic_gradient_descent(loss_fn,
     return nat_params, adam_params, loss_ta.stack()
 
 
-def natural_adam_stochastic_gradient_descent_with_linesearch(
+def natural_adam_stochastic_gradient_descent_with_linesearch_old(
         loss_fn,
         nat_params,
         adam_params,
@@ -481,11 +481,8 @@ def natural_adam_stochastic_gradient_descent_with_linesearch(
     return nat_params, adam_params, loss_ta.stack()
 
 
-def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
+def natural_adam_stochastic_gradient_descent_with_linesearch(
         loss_fn,
-        X,
-        Y,
-        minibatch_size,
         nat_params,
         adam_params,
         iters=100,
@@ -495,7 +492,8 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
         beta2=0.999,
         epsilon=1e-8,
         stop_patience=3,
-        num_linesearch=5,
+        patience_percentage=1e-3,
+        log_step=0.05,
         parallel_iterations=10):
     """
     Inspired by https://arxiv.org/pdf/1803.09151.pdf
@@ -517,7 +515,6 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
     :param parallel_iterations:
     :return:
     """
-    #TODO: natural gradients
 
     learning_rate = tf.convert_to_tensor(learning_rate, float_type, 'learning_rate')
     gamma = tf.convert_to_tensor(gamma, float_type, 'gamma')
@@ -539,114 +536,141 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
     m0 = [tf.zeros_like(v) for v in adam_params]
     v0 = [tf.zeros_like(v) for v in adam_params]
 
-    N = tf.shape(X)[0]
+    def _body(t, nat_params, adam_params, m, v, loss_ta, min_loss, patience, lr,gm):
 
-    def _body(t, nat_params, adam_params, m, v, loss_ta, min_loss, patience):
-        if minibatch_size is not None:
-            minibatch_selection = tf.random.shuffle(tf.range(N))[:minibatch_size]
-            _X = tf.gather(X, minibatch_selection,axis=0)
-            _Y = (tf.gather(Y[0], minibatch_selection, axis=0), tf.gather(Y[1], minibatch_selection, axis=0))
-        else:
-            _X = X
-            _Y = Y
-
-        loss = tf.reduce_mean(loss_fn(*nat_params, *adam_params, _X, _Y))
-        loss_better = tf.less_equal(loss, min_loss)
+        loss = tf.reduce_mean(loss_fn(nat_params, adam_params))
+        loss_better = tf.less_equal(loss,
+                                    min_loss - tf.convert_to_tensor(patience_percentage, float_type) * tf.math.abs(
+                                        min_loss))
         min_loss = tf.minimum(min_loss, loss)
         patience = tf.cond(loss_better, lambda: tf.constant(0, patience.dtype),
                            lambda: patience + tf.constant(1, patience.dtype))
 
         loss_ta = loss_ta.write(t, loss)
-
         nat_grads = tf.gradients(loss, nat_params)
+        adam_grads = [g_t + tf.constant(0.1, float_type) * tf.math.abs(g_t) * tf.random.normal(shape=tf.shape(g_t),
+                                                                                                dtype=g_t.dtype) if g_t is not None else None
+                      for g_t in nat_grads]
 
-        next_nat_params = _natgrad_update(nat_grads, nat_params, adam_params,loss, t, _X, _Y)
-
+        next_nat_params, next_gm = _natgrad_update(nat_grads, nat_params, adam_params,loss, t, gm)
         adam_grads = tf.gradients(loss, adam_params)
+        adam_grads = [g_t + tf.constant(0.1, float_type) * tf.math.abs(g_t) * tf.random.normal(shape=tf.shape(g_t),
+                                                                                          dtype=g_t.dtype) if g_t is not None else None for g_t in adam_grads]
 
-        next_adam_params, next_m, next_v = _adam_update(adam_grads, adam_params, nat_params, m, t, v, loss, _X, _Y)
+        next_adam_params, next_m, next_v, next_lr = _adam_update(adam_grads, adam_params, nat_params, m, t, v, loss, lr)
         [n.set_shape(p.shape) for n, p in zip(next_adam_params, adam_params)]
         [n.set_shape(p.shape) for n, p in zip(next_nat_params, nat_params)]
 
-        return t+1, next_nat_params, next_adam_params, next_m, next_v, loss_ta, min_loss, patience
+        return t+1, next_nat_params, next_adam_params, next_m, next_v, loss_ta, min_loss, patience, next_lr, next_gm
 
-    def _natgrad_update(nat_grads, nat_params, adam_params, loss0, t, X, Y):
-        q_mean, q_scale = nat_params
-        q_sqrt = tf.nn.softplus(q_scale)
-        diag_F_q_mean_inv = tf.math.square(q_sqrt)
-        diag_F_q_scale_inv = 0.5 * diag_F_q_mean_inv * tf.math.square(tf.math.reciprocal(tf.nn.sigmoid(q_scale)))
+    def _natgrad_update(nat_grads, nat_params, adam_params, loss0, t, gm):
+        F_inv_grads = []
+        for i in range(0, len(nat_params),2):
+            qmean = nat_params[i]
+            qscale = nat_params[i+1]
+            qsqrt2 = tf.math.square(tf.nn.softplus(qscale))
+            F_inv_grads.append(qsqrt2 * nat_grads[i] if nat_grads[i] is not None else None)
+            F_inv_grads.append(0.5 * qsqrt2 * tf.math.square(tf.math.reciprocal(tf.nn.sigmoid(qscale))) * nat_grads[i+1] if nat_grads[i+1] is not None else None)
 
         def search_function(a):
-            test_nat_params = [q_mean - a * diag_F_q_mean_inv * nat_grads[0], q_scale - a * diag_F_q_scale_inv * \
-                               nat_grads[1]]
-            #TODO: don't need to redo L because adams params fixed
-            loss = tf.reduce_mean(loss_fn(*test_nat_params, *adam_params, X, Y))
+            test_nat_params = [(param - a * grad if grad is not None else param) for (param, grad) in zip(nat_params, F_inv_grads)]
+            loss = tf.reduce_mean(loss_fn(test_nat_params, adam_params))
             return loss - loss0
 
-        search_space = tf.math.exp(tf.cast(tf.linspace(tf.math.log(gamma)-7., tf.math.log(gamma), num_linesearch),float_type))
-        search_results = tf.map_fn(search_function, search_space, parallel_iterations=num_linesearch)
-        argmin = tf.argmin(search_results)
+        log_search_space = tf.math.log(gm) + tf.constant([log_step, 0., -log_step], float_type)
+        search_space = tf.math.exp(log_search_space)
+        search_results = tf.map_fn(search_function, search_space, parallel_iterations=3)
 
-        a = search_space[argmin]
+        argmin = tf.argmin(search_results)
+        next_gamma = search_space[argmin]
         loss_min = search_results[argmin]
 
-        with tf.control_dependencies([tf.print('Step:', t, 'Optimal','Gamma:', a, 'loss reduction', loss_min)]):
-            next_nat_params = [q_mean - a * diag_F_q_mean_inv * nat_grads[0], q_scale - a * diag_F_q_scale_inv * \
-                           nat_grads[1]]
+        alt_log_search_space = tf.math.log(gm) + tf.constant([1,-1,-2,-3], float_type)
+        alt_search_space = tf.math.exp(alt_log_search_space)
+        alt_search_results = tf.map_fn(search_function, alt_search_space, parallel_iterations=3)
 
-            return next_nat_params
+        alt_argmin = tf.argmin(alt_search_results)
+        alt_next_gamma = alt_search_space[argmin]
+        alt_loss_min = alt_search_results[argmin]
 
-    def _adam_update(adam_grads, adam_params, nat_params, m, t, v, loss0, X, Y):
+        next_gamma = tf.cond(tf.greater_equal(loss_min, tf.constant(0.,float_type)), lambda: alt_next_gamma, lambda: next_gamma)
+        loss_min = tf.cond(tf.greater_equal(loss_min, tf.constant(0., float_type)), lambda: alt_loss_min,
+                             lambda: loss_min)
+
+        with tf.control_dependencies(
+                [tf.print('Step:', t, 'Optimal', 'Gamma:', next_gamma, 'loss reduction', loss_min,
+                          'from loss:', loss0, 'loss_selection',tf.stack([search_space, search_results],axis=1))]):#, 'grads',F_inv_grads)]):
+            next_nat_params = [(param - next_gamma * grad if grad is not None else param) for (param, grad) in zip(nat_params, F_inv_grads)]
+            return next_nat_params, next_gamma
+
+    def _adam_update(adam_grads, adam_params, nat_params, m, t, v, loss0, lr):
         t_float = tf.cast(t, float_type) + 1.
         lr_t = tf.math.sqrt(1. - tf.math.pow(beta2, t_float)) * \
                tf.math.reciprocal(tf.math.sqrt(1. - tf.math.pow(beta1, t_float)))
         next_m, next_v = [], []
+        scaled_grads = []
         for (m_t, v_t, g_t) in zip(m, v, adam_grads):
             if g_t is None:
                 next_m.append(m_t)
                 next_v.append(v_t)
+                scaled_grads.append(None)
                 continue
             m_t = beta1 * m_t + (1. - beta1) * g_t
             v_t = beta2 * v_t + (1. - beta2) * tf.math.square(g_t)
             next_m.append(m_t)
             next_v.append(v_t)
-
-            # p_t = p_t - lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon)
+            scaled_grads.append(lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
 
         def search_function(a):
-            #TODO: don't need to redo predictive x because nat_params fixed
             test_adam_params = []
-            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, adam_grads):
+            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, scaled_grads):
                 if g_t is None:
-                    next_adam_params.append(p_t)
+                    test_adam_params.append(p_t)
                     continue
-                test_adam_params.append(p_t - a * lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
-            loss = tf.reduce_mean(loss_fn(*nat_params, *test_adam_params, X, Y))
+                test_adam_params.append(p_t - a * g_t)
+            loss = tf.reduce_mean(loss_fn(nat_params, test_adam_params))
             return loss - loss0
 
-        search_space = tf.math.exp(tf.cast(tf.linspace(tf.math.log(learning_rate) - 7., tf.math.log(learning_rate), num_linesearch), float_type))
-        search_results = tf.map_fn(search_function, search_space, parallel_iterations=num_linesearch)
-        argmin = tf.argmin(search_results)
+        log_search_space = tf.math.log(lr) + tf.constant([log_step, 0., -log_step], float_type)
+        search_space = tf.math.exp(log_search_space)
+        search_results = tf.map_fn(search_function, search_space, parallel_iterations=3)
 
-        a = search_space[argmin]
+        argmin = tf.argmin(search_results)
+        next_lr = search_space[argmin]
         loss_min = search_results[argmin]
 
-        with tf.control_dependencies([tf.print('Step:', t, 'Optimal', 'Learning rate:', a, 'loss reduction', loss_min)]):
+        alt_log_search_space = tf.math.log(lr) + tf.constant([1,-1, -2, -3], float_type)
+        alt_search_space = tf.math.exp(alt_log_search_space)
+        alt_search_results = tf.map_fn(search_function, alt_search_space, parallel_iterations=3)
+
+        alt_argmin = tf.argmin(alt_search_results)
+        alt_next_lr = alt_search_space[argmin]
+        alt_loss_min = alt_search_results[argmin]
+
+        next_lr = tf.cond(tf.greater_equal(loss_min, tf.constant(0., float_type)), lambda: alt_next_lr,
+                             lambda: next_lr)
+        loss_min = tf.cond(tf.greater_equal(loss_min, tf.constant(0., float_type)), lambda: alt_loss_min,
+                           lambda: loss_min)
+
+
+        with tf.control_dependencies(
+                [tf.print('Step:', t, 'Optimal', 'Learning rate:', next_lr, 'loss reduction', loss_min,
+                          'from loss:', loss0,'loss_selection',tf.stack([search_space, search_results],axis=1))]):
             next_adam_params = []
-            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, adam_grads):
+            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, scaled_grads):
                 if g_t is None:
                     next_adam_params.append(p_t)
                     continue
-                next_adam_params.append(p_t - a * lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
+                next_adam_params.append(p_t - next_lr * g_t)
 
-        return next_adam_params, next_m, next_v
+        return next_adam_params, next_m, next_v, next_lr
 
-    def _cond(t, nat_params, adam_params, m, v, loss_ta, min_loss, patience):
+    def _cond(t, nat_params, adam_params, m, v, loss_ta, min_loss, patience, lr, gm):
         return tf.logical_and(tf.less(patience, stop_patience), tf.less(t, iters))
 
     loss_ta = tf.TensorArray(dtype=float_type, size=iters, infer_shape=False,element_shape=())
 
-    t, nat_params, adam_params, m, v, loss_ta, _, _ = tf.while_loop(_cond,
+    t, nat_params, adam_params, m, v, loss_ta, _, _, _, _ = tf.while_loop(_cond,
                                     _body,
                                     (tf.constant(0, dtype=tf.int32),
                                      nat_params,
@@ -655,7 +679,8 @@ def natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(
                                      v0,
                                      loss_ta,
                                      tf.constant(np.inf,float_type),
-                                     tf.constant(0, tf.int32)),
+                                     tf.constant(0, tf.int32),
+                                     learning_rate, gamma),
                                     parallel_iterations=parallel_iterations,
                                     back_prop=False,
                                     return_same_structure=True)

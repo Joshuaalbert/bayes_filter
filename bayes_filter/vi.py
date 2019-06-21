@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import tensorflow_probability as tfp
-from .sgd import adam_stochastic_gradient_descent, natural_adam_stochastic_gradient_descent, natural_adam_stochastic_gradient_descent_with_linesearch, natural_adam_stochastic_gradient_descent_with_linesearch_minibatch
+from .sgd import natural_adam_stochastic_gradient_descent, natural_adam_stochastic_gradient_descent_with_linesearch
 from . import float_type, TEC_CONV
 from .misc import sqrt_with_finite_grads, safe_cholesky, flatten_batch_dims, log_normal_cdf_solve
 from .kernels import DTECIsotropicTimeGeneral
@@ -75,10 +75,11 @@ class LaplaceLikelihood(Likelihood):
         super(LaplaceLikelihood, self).__init__()
         self._Yreal = Yreal
         self._Yimag = Yimag
-        self._invfreqs = tf.constant(TEC_CONV, float_type) * tf.math.reciprocal(freqs)
+        self._amp = tf.math.sqrt(tf.math.square(Yreal) + tf.math.square(Yimag))
+        self._freqs = freqs
         self._transform_fn = transform_fn
 
-    def log_prob(self, white_dtec, y_sigma):
+    def log_prob(self, clock, white_dtec, y_sigma):
         """
         Represents log P(Yreal, Yimag | white_dtec, hyperparams)
         where P is the product of Laplace distributions over frequency and coordinate index
@@ -92,13 +93,15 @@ class LaplaceLikelihood(Likelihood):
             [A, B]
         """
 
-        Nf = tf.cast(tf.shape(self._invfreqs)[0],float_type)
+        Nf = tf.cast(tf.shape(self._freqs)[0],float_type)
         # A, B, N
         dtec = self._transform_fn(white_dtec)
+        clock_conv = (2.*np.pi)*self._freqs
+        tec_conv = tf.constant(TEC_CONV, float_type) * tf.math.reciprocal(self._freqs)
         # [A, B, N, Nf]
-        phase = dtec[..., None] * self._invfreqs
-        Yreal_model = tf.cos(phase)
-        Yimag_model = tf.sin(phase)
+        phase = tec_conv * dtec[..., None] + clock_conv * clock[..., None]
+        Yreal_model = self._amp * tf.cos(phase)
+        Yimag_model = self._amp * tf.sin(phase)
         # B, 1
         log_y_sigma = tf.math.log(y_sigma)
         # [A, B, N, Nf]
@@ -109,8 +112,7 @@ class LaplaceLikelihood(Likelihood):
         #TODO: is div by Nf right?
 
         likelihood = tf.reduce_sum(likelihood, axis=[-2, -1])/Nf
-        prior = tf.reduce_mean(tfp.distributions.Normal(loc=tf.constant(0.05, float_type), scale=tf.constant(0.05, float_type)).log_prob(y_sigma))
-        return likelihood + prior
+        return likelihood
 
 class VariationalBayesHeirarchical(object):
     def __init__(self, Yreal, Yimag, freqs, X, Xstar, dtec_samples=10, hyperparam_samples=10, mean_hyperparam_approx=True, obs_type='DTEC',
@@ -580,12 +582,15 @@ class VariationalBayesZIsX(object):
 
 
 class VariationalBayes(object):
-    def __init__(self, Yreal, Yimag, freqs, X, Xstar, Z, y_sigma, dtec_samples=10, kernel_params=None, minibatch_size=None):
+    def __init__(self, Yreal, Yimag, freqs, X, Xstar, Z, y_sigma, num_samples=10, kernel_params=None, minibatch_size=None):
         self._Yreal = Yreal
         self._Yimag = Yimag
         self._freqs = freqs
+        #Nd, Na
         self._y_sigma = y_sigma
-        self._invfreqs = tf.constant(TEC_CONV, float_type) * tf.math.reciprocal(freqs)
+        self.tec_conv = TEC_CONV * tf.math.reciprocal(self._freqs)
+        self.clock_conv = (2. * np.pi * 1e-9) * self._freqs
+        self._shape = tf.shape(self._Yreal)
         self._X = X
         self._Xstar = Xstar
         self._Z = Z
@@ -594,13 +599,14 @@ class VariationalBayes(object):
         self.Ns = tf.shape(self._Xstar)[0]
         self.Nz = tf.shape(self._Z)[0]
         self._kernel_params = kernel_params
-        self._dtec_samples = tf.convert_to_tensor(dtec_samples, tf.int32, name='num_dtec_samples')
+        self._num_samples = tf.convert_to_tensor(num_samples, tf.int32, name='num_dtec_samples')
         self._minibatch_size = tf.convert_to_tensor(minibatch_size,tf.int64) if minibatch_size is not None else None
         if self._minibatch_size is not None:
             self._scale = tf.cast(self.N, float_type)/tf.cast(self._minibatch_size, float_type)
         else:
             self._scale = tf.constant(1., float_type)
 
+        self._white_posterior = WhitenedVariationalPosterior(event_size=self.Nz)
         self._white_posterior = WhitenedVariationalPosterior(event_size=self.Nz)
 
         self._hyperparam_bijectors = [
@@ -613,7 +619,9 @@ class VariationalBayes(object):
             tfp.bijectors.Chain(
                 [tfp.bijectors.AffineScalar(scale=tf.constant(100., float_type)), tfp.bijectors.Softplus()]),
             tfp.bijectors.Chain(
-                [tfp.bijectors.AffineScalar(scale=tf.constant(50., float_type)), tfp.bijectors.Softplus()])
+                [tfp.bijectors.AffineScalar(scale=tf.constant(50., float_type)), tfp.bijectors.Softplus()]),
+            tfp.bijectors.Chain(# clock scale in ns
+                [tfp.bijectors.AffineScalar(scale=tf.constant(0.01, float_type)), tfp.bijectors.Softplus()])
         ]
         self._hyperparam_distributions = [
             None,#tfp.distributions.LogNormal(*log_normal_cdf_solve(2., 8., as_tensor=True), name='pert_ant_lengthscale')
@@ -623,9 +631,14 @@ class VariationalBayes(object):
             None
         ]
 
-    def _initial_states(self, batch_size=None):
-        return self._white_posterior.initial_variational_params(
-            batch_size), (tfp.distributions.softplus_inverse(tf.ones((1,8),float_type)),)
+    def _initial_states(self):
+        Nt,Nd,Na,Nf = self._shape[0], self._shape[1],self._shape[2],self._shape[3]
+        clock_qmean = tf.zeros((Nt,1,Na),float_type, name='clock_qmean')
+        clock_qscale = tfp.distributions.softplus_inverse(tf.ones((Nt,1,Na),float_type), name='clock_qscale')
+        tec_qmean = tf.zeros((Nt*Nd*Na,), float_type, name='tec_qmean')
+        tec_qscale = tfp.distributions.softplus_inverse(tf.ones((Nt*Nd*Na,), float_type), name='tec_qscale')
+        init_hyperparams = tfp.distributions.softplus_inverse(tf.ones((1,6),float_type), name='hyperparam_init')
+        return [clock_qmean, clock_qscale, tec_qmean, tec_qscale], init_hyperparams
 
     def _constrain_hyperparams(self, sampled_hyperparams):
         """
@@ -655,181 +668,148 @@ class VariationalBayes(object):
             return tf.constant(0., float_type)
         return tf.math.accumulate_n(priors, shape=())
 
-    def _loss_fn(self, q_mean, q_scale, hyperparams_unconstrained, X, Y):
+    def _loss_fn(self, nat_params, adam_params):
+
+        [clock_qmean, clock_qscale, tec_qmean,tec_qscale] = nat_params
+        [hyperparams_unconstrained] = adam_params
 
         #each 1,1
-        amp, lengthscales, a, b, timescale = self._constrain_hyperparams(hyperparams_unconstrained)
+        amp, lengthscales, a, b, timescale, clock_scale = self._constrain_hyperparams(hyperparams_unconstrained)
 
         kern = DTECIsotropicTimeGeneral(variance=tf.math.square(amp),
                                         lengthscales=lengthscales,
                                         a=a,
                                         b=b,
                                         timescale=timescale,
-                                        squeeze=False,
+                                        squeeze=True,
                                         **self._kernel_params)
 
-        # 1, 1, Nz, Nz
-        K_z_z = kern.K(self._Z, None)
-        L_z_z = safe_cholesky(K_z_z)
+        # Nt, 1, Na
+
+        clock_qsqrt = tf.nn.softplus(clock_qscale)
+        clock_dist = tfp.distributions.Normal(loc=clock_qmean, scale=clock_qsqrt)
+        #S, Nt, 1, Na
+        clock_samples = clock_scale * clock_dist.sample(self._num_samples)
+
+        ###
+        # clock KL
+        # 0.5 sum_i (sigma_i^2 + mu_i^2 - 2.*log(sigma_i) - 1)
 
 
-        # q_mean, q_scale = white_vi_params
-        q_sqrt = tf.nn.softplus(q_scale)
+        # Nclock
+        q_var = tf.math.square(clock_qsqrt)
+        trace = tf.reduce_sum(q_var)
+        mahalanobis = tf.reduce_sum(tf.math.square(clock_qmean))
+        constant = - tf.cast(tf.size(clock_qmean, out_type=tf.int64), float_type)
+        logdet_qcov = tf.reduce_sum(tf.math.log(q_var))
+        logdetL = tf.cast(tf.size(clock_qmean, out_type=tf.int64), float_type) * tf.math.log(clock_scale)
+        twoKL = trace + mahalanobis - logdet_qcov + constant
+        # with tf.control_dependencies([tf.print('clock KL terms', trace, mahalanobis, - logdet_qcov, constant)]):
+        clock_prior_KL =  0.5 * twoKL# - logdetL
 
-        dtec_prior_KL = self._dtec_prior_kl(q_mean, q_sqrt, L_z_z)
 
-        if self._minibatch_size is not None:
-            K_z_xmini = kern.K(self._Z, X)
-            K_xmini_xmini = kern.K(X, None)
-            q_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_xmini_xmini, K_z_xmini)
-            dtec_samples = q_dist.sample(self._dtec_samples)
+        # Nz, Nz
+        K = kern.K(self._Z, None)
+        # Nz, Nz
+        L = safe_cholesky(K)
+        #N
+        tec_qsqrt = tf.nn.softplus(tec_qscale)
+        white_dist = tfp.distributions.MultivariateNormalDiag(tec_qmean, scale_diag=tec_qsqrt)
+        # S, Nz
+        white_tec = white_dist.sample(self._num_samples)
+        # S, Nz
+        # L_ij, W_sj -> T_si
+        tec_samples = tf.matmul(white_tec, L, transpose_b=True)
+        #S, Nt, Nd, Na
+        tec_samples = tf.reshape(tec_samples, tf.concat([[-1], self._shape[:-1]], axis=0))
 
-            likelihood = LaplaceLikelihood(Y[0], Y[1], self._freqs, transform_fn=lambda x: x)
-            # TODO: derive better var_exp
-            var_exp = tf.reduce_mean(likelihood.log_prob(dtec_samples, self._y_sigma))
+        #scalar
+        q_var = tf.math.square(tec_qsqrt)
+        trace = tf.reduce_sum(q_var)
+        mahalanobis = tf.reduce_sum(tf.math.square(tec_qmean))
+        constant = -tf.cast(tf.size(tec_qmean, out_type=tf.int64), float_type)
+        logdet_qcov = tf.reduce_sum(tf.math.log(q_var))
+        twoKL = mahalanobis + constant - logdet_qcov + trace
+        logdetL = tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)))
+        tec_prior_KL = 0.5 * twoKL# - logdetL
 
-        else:
-            # num_dtec, num_hyperparams, N, N
-            L_expanded = tf.tile(tf.expand_dims(L_z_z, 0), [self._dtec_samples, 1, 1, 1])
-            def transform_fn(white_dtec):
-                """
-                Constrain white_dtec to tec
-                L is [A, B, N, N]
-
-                :param white_dtec: tf.Tensor
-                    [A, B, N, 1]
-                :return: tf.Tensor
-                    [A,B,N]
-                """
-                # white_dtec[a,b,j,1].L[a,b,i,j] -> white_dtec^T[a,b,1,j].L^T[a,b,j,i] -> [a,b, 1, i]
-                return tf.matmul(white_dtec, L_expanded, transpose_a=True, transpose_b=True)[:,:,0, :]
-
-                # # A, B, N
-                # return tf.tensordot(white_dtec, L_z_z, axes=[[-1], [-1]])
-
-            white_dist = self._white_posterior._build_distribution(q_mean, q_scale)
-            # num_dtec, N
-            white_dtec = white_dist.sample(self._dtec_samples)
-            # num_dtec, 1, N, 1
-            white_dtec = white_dtec[:, None, :, None]
-            likelihood = LaplaceLikelihood(Y[0], Y[1], self._freqs, transform_fn=transform_fn)
-            var_exp = tf.reduce_mean(likelihood.log_prob(white_dtec, self._y_sigma))
+        amplitude = tf.math.sqrt(tf.math.square(self._Yimag) + tf.math.square(self._Yreal))
+        #S, Nt, Nd, Na, Nf
+        phase_m = tec_samples[..., None]*self.tec_conv + clock_samples[...,None]*self.clock_conv
+        Yimag_m = amplitude*tf.math.sin(phase_m)
+        Yreal_m = amplitude*tf.math.cos(phase_m)
+        #S, Nt, Nd, Na
+        log_prob = - tf.math.reciprocal(self._y_sigma) * tf.reduce_mean(sqrt_with_finite_grads(tf.math.square(Yimag_m - self._Yimag) + tf.math.square(Yreal_m - self._Yreal)), axis=-1) - tf.math.log(2.*self._y_sigma)
+        #S
+        log_prob = tf.reduce_sum(log_prob, axis=[1,2,3])
+        #scalar
+        var_exp = tf.reduce_mean(log_prob,axis=0)
 
         # scalar
-        elbo = var_exp*self._scale - dtec_prior_KL + self._hyperparam_priors(amp, lengthscales, a, b, timescale)
+        elbo = var_exp - tec_prior_KL - clock_prior_KL
+        # + self._hyperparam_priors(amp, lengthscales, a, b, timescale)
         # with tf.control_dependencies([tf.print('elbo', elbo,
-        #                                        'var_exp', var_exp, 'dtec_prior', dtec_prior_KL,
+        #                                        'var_exp', var_exp, 'dtec_prior', tec_prior_KL, 'clock_prior_KL',clock_prior_KL,
         #                                        'amp', amp, 'lengthscales', lengthscales, 'a', a, 'b', b, 'timescale',
-        #                                        timescale, 'y_sigma', self._y_sigma)]):
+        #                                        timescale, 'clock_scale',clock_scale)]):
 
         loss = tf.math.negative(elbo, name='loss')
         return loss
 
-    def _dtec_prior_kl(self, q_mean,  q_sqrt, L):
-        """
-        Get the KL-div [ Q(white_dtec) || P(white_dtec | hyperparams)]
-        where
-        Q = N[m, S] and S is diagonal
-        and
-        P = |L|^{-1} N[0,I]
-
-        KL-div [ N[m, S] || |L|^{-1} N[0,I]] =
-        KL-div [ N[m, S] || |L|^{-1} N[0,I]] + log |L|
-
-        :param white_dtec_params: tuple of tf.Tensor
-            [N+Ns] mean
-            [N+Ns] unconstrained scale
-        :param L: tf.Tensor
-            [num_hyperparams, N, N]
-        :return: tf.Tensor
-            [num_hyperparams]
-        """
-
-        logdetL = tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)))
-
-        # [N+Ns]
-        q_var = tf.math.square(q_sqrt)
-        trace = tf.reduce_sum(q_var)
-        mahalanobis = tf.reduce_sum(tf.math.square(q_mean))
-        constant = -tf.cast(tf.size(q_mean, out_type=tf.int64), float_type)
-        logdet_qcov  = tf.reduce_sum(tf.math.log(q_var))
-
-        twoKL = mahalanobis + constant - logdet_qcov + trace - logdetL
-        return 0.5 * twoKL
-
-        # # num_hyperparams
-        #
-        # return 0.5 * tf.reduce_sum(
-        #     variance + tf.math.square(mean) - tf.constant(1., float_type) - 2. * tf.math.log(variance),
-        #     axis=-1) + logdetL
-
-    def _build_variational_posteriors(self, white_vi_params):
-        white_dist = self._white_posterior._build_distribution(*white_vi_params)
-
-        return white_dist
-
     def solve_variational_posterior(self, param_warmstart,
                                     solver_params=None, parallel_iterations=10):
-        param_init, (hyperparams_unconstrained,) = self._initial_states()
+        [clock_qmean, clock_qscale, tec_qmean,tec_qscale], hyperparams = self._initial_states()
 
-        param_warmstart = \
+        [clock_qmean, clock_qscale, tec_qmean,tec_qscale] = \
             tf.cond(tf.reduce_all(tf.equal(param_warmstart[0], 0.)),
-                    lambda: param_init,
+                    lambda: [clock_qmean, clock_qscale, tec_qmean,tec_qscale],
                     lambda: param_warmstart, strict=True)
 
         # TODO: speed up kernel computation
 
         with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
 
-            learned_params, [learned_hyperparams_unconstrained], loss, t = \
-                natural_adam_stochastic_gradient_descent_with_linesearch_minibatch(self._loss_fn,
-                                                                                   self._X,
-                                                                                   (self._Yreal, self._Yimag),
-                                                                                   self._minibatch_size,
-                                                                                   param_warmstart,
-                                                                                   [hyperparams_unconstrained],
-                                                                                   parallel_iterations=parallel_iterations,
-                                                                                   **solver_params)
-        ###
-        # produce the posterior distributions needed
-
+            [clock_qmean, clock_qscale, tec_qmean,tec_qscale], [learned_hyperparams_unconstrained], loss, t = \
+                natural_adam_stochastic_gradient_descent_with_linesearch(self._loss_fn,
+                                                               [clock_qmean, clock_qscale, tec_qmean,tec_qscale],
+                                                               [hyperparams],
+                                                               parallel_iterations=parallel_iterations,
+                                                               **solver_params)
 
 
         # each 1,1
-        amp, lengthscales, a, b, timescale = self._constrain_hyperparams(
-            learned_hyperparams_unconstrained)
+        amp, lengthscales, a, b, timescale, clock_scale = self._constrain_hyperparams(learned_hyperparams_unconstrained)
 
         kern = DTECIsotropicTimeGeneral(variance=tf.math.square(amp),
                                         lengthscales=lengthscales,
                                         a=a,
                                         b=b,
                                         timescale=timescale,
-                                        squeeze=False,
+                                        squeeze=True,
                                         **self._kernel_params)
 
-        # 1, 1, Nz, Nz
+        # Nt, 1, Na
+        Nclock = tf.cast(tf.size(clock_qmean, out_type=tf.int64), float_type)
+        clock_qsqrt = tf.nn.softplus(clock_qscale)
+        clock_dist = tfp.distributions.Normal(loc=clock_scale*clock_qmean, scale=clock_scale*clock_qsqrt)
+
+        # Nz, Nz
         K_z_z = kern.K(self._Z, None)
         L_z_z = safe_cholesky(K_z_z)
+        tec_qsqrt = tf.nn.softplus(tec_qscale)
 
-        # num_hyperparams, M, N
         K_z_xstar = kern.K(self._Z, self._Xstar)
         K_xstar_xstar = kern.K(self._Xstar, None)
+        tec_screen_dist = conditional_different_points(tec_qmean, tec_qsqrt, L_z_z, K_xstar_xstar, K_z_xstar)
 
-        q_mean, q_scale = learned_params
-        q_sqrt = tf.nn.softplus(q_scale)
-
-        dtec_screen_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_xstar_xstar, K_z_xstar)
-
-        # num_hyperparams, M, N
         K_z_x = kern.K(self._Z, self._X)
         K_x_x = kern.K(self._X, None)
+        tec_data_dist = conditional_different_points(tec_qmean, tec_qsqrt, L_z_z, K_x_x, K_z_x)
 
-        dtec_data_dist = conditional_different_points(q_mean, q_sqrt, L_z_z, K_x_x, K_z_x)
+        tec_basis_dist = conditional_same_points(tec_qmean, tec_qsqrt, L_z_z)
 
-        dtec_basis_dist = conditional_same_points(q_mean, q_sqrt, L_z_z)
-
-        return t, loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (amp, lengthscales, a, b, timescale), (
-        q_mean, q_scale)
+        return t, loss, clock_dist, tec_basis_dist, tec_data_dist, tec_screen_dist,\
+               (amp, lengthscales, a, b, timescale, clock_scale), [clock_qmean, clock_qscale, tec_qmean,tec_qscale]
 
 def conditional_same_points(q_mean, q_sqrt, L, prior_mean=None):
     """
@@ -884,12 +864,15 @@ def conditional_different_points(q_mean, q_sqrt, L, K_xstar_xstar, K_x_xstar, pr
     """
     ###
     # conditional one first
-    # [num_hyperparams, M, N]
+    # [..., M, N]
     A = tf.linalg.triangular_solve(L, K_x_xstar)
+    # ..., M, N
     B = q_sqrt[:, None] * A
-    # num_hyperparams, N
+    # ..., N
     mean = tf.tensordot(A, q_mean, axes=[[-2], [-1]])
+    # ..., N, N
     f_cov = K_xstar_xstar - tf.matmul(A,A,transpose_a=True) + tf.matmul(B,B,transpose_a=True)
+    # ..., N, N
     L = safe_cholesky(f_cov)
 
     if prior_mean is None:

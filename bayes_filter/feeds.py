@@ -117,14 +117,14 @@ class DatapackFeed(Feed):
         self.datapack = datapack
         self.basis_selection = selection
         self.selection = self.basis_selection.copy()
-        self.selection['ant'] = None
+        # self.selection['ant'] = None
         self.selection['dir'] = None
         self.screen_selection = self.basis_selection.copy()
-        self.screen_selection['ant'] = None
+        # self.screen_selection['ant'] = None
         self.screen_selection['dir'] = None #always store all directions of screen
         self.solset = solset
         self.posterior_name = postieror_name
-        self.data_map = {solset:'phase'}
+        self.data_map = {solset:'phase', solset:'amplitude'}
         self.screen_solset = "screen_{}".format(postieror_name)
         self.posterior_solset = "data_{}".format(postieror_name)
         with self.datapack:
@@ -153,6 +153,8 @@ class DatapackFeed(Feed):
                                                   self.basis_coord_feed.feed,
                                                   self.continue_feed.feed))
         self.feed = self.datapack_feed
+        #Nd, Na
+        self.y_sigma = self.get_y_sigma()
 
     def _get_coords(self, solset, soltab, selection = None):
         if selection is None:
@@ -214,17 +216,21 @@ class DatapackFeed(Feed):
         ref_ant = coords['Xa'][0, :]
         ref_dir = np.mean(coords['Xd'], axis=0)
 
-        keep = []
-        for i in range(1, coords['Xa'].shape[0]):
-            if np.all(np.linalg.norm(coords['Xa'][i:i + 1, :] - coords['Xa'][keep, :], axis=1) > self.basis_ant_dist_cutoff):
-                keep.append(i)
-        logging.info("Training on antennas: {}".format(len(keep)))
-        self. basis_selection['ant'] = keep
+        if self.basis_ant_dist_cutoff is not None:
+            keep = []
+            for i in range(1, coords['Xa'].shape[0]):
+                if np.all(np.linalg.norm(coords['Xa'][i:i + 1, :] - coords['Xa'][keep, :], axis=1) > self.basis_ant_dist_cutoff):
+                    keep.append(i)
+            logging.info("Training on antennas: {}".format(len(keep)))
+            self. basis_selection['ant'] = keep
 
         basis_coords = self._get_coords(solset, soltab, self.basis_selection)
         Xt = basis_coords['Xt']
         Xd = basis_coords["Xd"]
         Xa = basis_coords["Xa"]
+        self.basis_shape = [Xt.shape[0], Xd.shape[0], Xa.shape[0]]
+
+
 
         freq_feed = FreqFeed(basis_coords['Xf'])
 
@@ -268,7 +274,33 @@ class DatapackFeed(Feed):
         """
         next_index = tf.minimum(next_index, self.time_feed.Nt)
         data = tf.py_function(self._get_block, [index, next_index], [float_type]*2)
-        return [flatten_batch_dims(d, num_batch_dims=-self.event_size) for d in data]
+        return data
+        # return [flatten_batch_dims(d, num_batch_dims=-self.event_size) for d in data]
+
+    def get_y_sigma(self):
+        with self.datapack:
+            self.basis_selection['time'] = slice(None, None, 1)
+            G = []
+            for (solset, soltab) in self.data_map.items():
+                self.datapack.current_solset = solset
+                self.datapack.select(**self.basis_selection)
+                val, axes = getattr(self.datapack, soltab)
+                if soltab == 'phase':
+                    G.append(np.exp(1j * val))
+                elif soltab == 'amplitude':
+                    G.append(np.abs(val))
+            G = np.prod(G, axis=0)  # Npol, Nd, Na, Nf, Nt
+            G = np.transpose(G[0, ...], (3, 0, 1, 2))  # Nt, Nd, Na, Nf
+            Y_real = np.real(G)
+            Y_imag = np.imag(G)
+
+            b = (np.abs(Y_real[1:,...] - Y_real[:-1, ...]) + np.abs(Y_imag[1:,...] - Y_imag[:-1, ...]))
+            #Nd, Na
+            y_sigma = 0.25*b.mean(3).mean(0)
+            y_sigma = np.maximum(y_sigma, 0.02)
+            return y_sigma
+
+
 
     def _get_block(self, index, next_index):
         index = index.numpy()

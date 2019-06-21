@@ -8,13 +8,13 @@ from bayes_filter.datapack import DataPack, _load_array_file
 import numpy as np
 
 if __name__ == '__main__':
-    output_folder = os.path.join(os.path.abspath('test_filter_vi_P126+65'), 'run15')
+    output_folder = os.path.join(os.path.abspath('test_filter_vi_P126+65'), 'run18')
     os.makedirs(output_folder, exist_ok=True)
     # datapack = make_example_datapack(5, 10, 2, name=os.path.join(output_folder, 'test_data.h5'), gain_noise=0.3,
     #                                  index_n=1, obs_type='DTEC', clobber=True,
     #                                  kernel_hyperparams={'variance': 3.5 ** 2, 'lengthscales': 15., 'a': 250.,
     #                                                      'b': 100., 'timescale': 50.})
-    datapack = DataPack('/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw.h5')
+    datapack = DataPack('/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v5.h5')
     datapack.current_solset = 'sol000'
     actual_antenna_labels, _ = datapack.antennas
     antenna_labels, antennas = _load_array_file(DataPack.lofar_array)
@@ -33,10 +33,11 @@ if __name__ == '__main__':
         with tf.device('/device:CPU:0'):
             logging.info("Setting up the index and datapack feeds.")
             datapack_feed = DatapackFeed(datapack,
-                                         selection={'ant': list(range(1,7,2)) + list(range(45, 62, 1)),'dir':None, 'pol':slice(0,1,1), 'time':slice(0,None,1)},
+                                         selection={'ant': slice(45,None,1),'dir':None, 'pol':slice(0,1,1), 'time':slice(0,100,1)},
                                          solset='sol000',
                                          postieror_name='posterior',
-                                         index_n=1)
+                                         index_n=1,
+                                         basis_ant_dist_cutoff=None)
 
             logging.info("Setting up the filter.")
             free_transition = FreeTransitionVariationalBayes(datapack_feed=datapack_feed, output_folder=output_folder)
@@ -47,13 +48,12 @@ if __name__ == '__main__':
                 kernel_params={'resolution': 4, 'fed_kernel': 'M52', 'obs_type': 'DTEC'},
                 num_parallel_filters=10,
                 solver_params=dict(iters=200,
-                                   learning_rate=0.1,
-                                   gamma=0.3,
-                                   stop_patience=6),
+                                   learning_rate=0.05,
+                                   gamma=0.005,
+                                   stop_patience=5),
                 num_mcmc_param_samples_learn=50,
                 num_mcmc_param_samples_infer=100,
-                minibatch_size=None,
-            y_sigma=0.1)
+                minibatch_size=None)
 
         logging.info("Initializing the filter")
         sess.run(free_transition.initializer)

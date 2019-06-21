@@ -496,9 +496,13 @@ class FreeTransitionVariationalBayes(object):
 
         ###
         # choose Z
+        Nt, Nd, Na = self.datapack_feed.basis_shape
+        clock_qmean = tf.zeros((Nt, 1, Na), float_type, name='clock_qmean')
+        clock_qscale = tfp.distributions.softplus_inverse(tf.ones((Nt, 1, Na), float_type), name='clock_qscale')
+        tec_qmean = tf.zeros((Nt * Nd * Na,), float_type, name='tec_qmean')
+        tec_qscale = tfp.distributions.softplus_inverse(tf.ones((Nt * Nd * Na,), float_type), name='tec_qscale')
 
-        white_dtec_posterior_temp = WhitenedVariationalPosterior(self.datapack_feed.basis_coord_feed.N)
-        self.init_params = white_dtec_posterior_temp.initial_variational_params()
+        self.init_params = [clock_qmean, clock_qscale, tec_qmean, tec_qscale]
 
         self.datapack_feed_iterator = tf.data.Dataset.zip(
             (self.datapack_feed.index_feed.feed, self.datapack_feed.feed)).make_initializable_iterator()
@@ -545,21 +549,20 @@ class FreeTransitionVariationalBayes(object):
         (Yreal, Yimag), freqs, X, Xstar, X_dim, Xstar_dim, Z, cont) = self.datapack_feed_iterator.get_next()
 
         variational_bayes = VariationalBayes(Yreal, Yimag, freqs, X, Xstar, Z, y_sigma,
-                                             dtec_samples=sample_params['num_mcmc_param_samples_learn'],
+                                             num_samples=sample_params['num_mcmc_param_samples_learn'],
                                              kernel_params=kernel_params,
                                              minibatch_size=minibatch_size)
 
         t0 = timer()
         with tf.control_dependencies([t0]):
-            t, loss, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, (
-                amp, lengthscales, a, b, timescale), \
-            next_param_warmstart = variational_bayes.solve_variational_posterior(
+            t, loss, clock_dist, dtec_basis_dist, dtec_data_dist, dtec_screen_dist, solved_hyperparams, \
+            [clock_qmean, clock_qscale, tec_qmean, tec_qscale] = variational_bayes.solve_variational_posterior(
                 param_warmstart,
                 solver_params=solver_params,
                 parallel_iterations=parallel_iterations)
             # num_hyperparams, 6
-            solved_hyperparams = (
-                amp, lengthscales, a, b, timescale)
+            # solved_hyperparams = (amp, lengthscales, a, b, timescale, clock_scale)
+            next_param_warmstart = [clock_qmean, clock_qscale, tec_qmean, tec_qscale]
 
         def _posterior(t):
             """
@@ -575,51 +578,54 @@ class FreeTransitionVariationalBayes(object):
             var = tfp.stats.variance(t, sample_axis=0)
             return mean, var
 
-        # S, H, N
-        dtec_data = dtec_data_dist.sample(sample_params['num_mcmc_param_samples_infer'])
-        dtec_data_post = _posterior(flatten_batch_dims(dtec_data, -1))
-        # TODO: why isn't screen working
-        # S, H, M
-        dtec_screen = dtec_screen_dist.sample(sample_params['num_mcmc_param_samples_infer'])
-        dtec_screen_post = _posterior(flatten_batch_dims(dtec_screen, -1))
+        # S, Nt, 1, Na
+        clock_samples = clock_dist.sample(sample_params['num_mcmc_param_samples_infer'])
 
-        # S, H, N
-        dtec_basis = dtec_basis_dist.sample(sample_params['num_mcmc_param_samples_infer'])
-        dtec_basis_post = _posterior(flatten_batch_dims(dtec_basis, -1))
-        phase_basis = dtec_basis[..., None] * variational_bayes._invfreqs
-        Yreal_basis = tf.math.cos(phase_basis)
-        Yimag_basis = tf.math.sin(phase_basis)
-        next_y_sigma = 0.5 * tf.reduce_mean(
-            tf.math.abs(Yreal - tf.reduce_mean(Yreal_basis, axis=[0, 1]))) + 0.5 * tf.reduce_mean(
-            tf.math.abs(Yimag - tf.reduce_mean(Yimag_basis, axis=[0, 1])))
+        # S, N
+        dtec_data_samples = dtec_data_dist.sample(sample_params['num_mcmc_param_samples_infer'])
+        # S, Nt, Nd, Na
+        dtec_data_samples = tf.reshape(flatten_batch_dims(dtec_data_samples, -1), tf.concat([[-1],X_dim], axis=0))
 
-        # S, H, N, Nf
-        phase_data = dtec_data[..., None] * variational_bayes._invfreqs
-        # S, H, M, Nf
-        phase_screen = dtec_screen[..., None] * variational_bayes._invfreqs
+        # S, M
+        dtec_screen_samples = dtec_screen_dist.sample(sample_params['num_mcmc_param_samples_infer'])
+        # S, Nt, Ndscreen, Na
+        dtec_screen_samples = tf.reshape(flatten_batch_dims(dtec_screen_samples, -1), tf.concat([[-1],Xstar_dim], axis=0))
+
+        # S, Nt, Nd, Na, Nf
+        phase_data = dtec_data_samples[..., None] * variational_bayes.tec_conv + clock_samples[..., None]*variational_bayes.clock_conv
+        # S, Nt, Nscreen, Na, Nf
+        phase_screen = dtec_screen_samples[..., None] * variational_bayes.tec_conv + clock_samples[..., None]*variational_bayes.clock_conv
 
         Yreal_data = tf.math.cos(phase_data)
         Yimag_data = tf.math.sin(phase_data)
 
-        eff_phase_data = tf.math.atan2(tf.reduce_mean(Yimag_data, axis=[0, 1]), tf.reduce_mean(Yreal_data, axis=[0, 1]))
+        eff_phase_data = tf.math.atan2(tf.reduce_mean(Yimag_data, axis=0), tf.reduce_mean(Yreal_data, axis=0))
 
         Yreal_screen = tf.math.cos(phase_screen)
         Yimag_screen = tf.math.sin(phase_screen)
-        eff_phase_screen = tf.math.atan2(tf.reduce_mean(Yimag_screen, axis=[0, 1]),
-                                         tf.reduce_mean(Yreal_screen, axis=[0, 1]))
+        eff_phase_screen = tf.math.atan2(tf.reduce_mean(Yimag_screen, axis=0),
+                                         tf.reduce_mean(Yreal_screen, axis=0))
 
-        Posterior = namedtuple('Solutions', ['tec', 'phase', 'weights_tec'])
+        Posterior = namedtuple('Solutions', ['tec', 'phase', 'weights_tec', 'clock','weights_clock'])
+
+        clock_post = _posterior(clock_samples)
+        dtec_data_post = _posterior(dtec_data_samples)
+        dtec_screen_post = _posterior(dtec_screen_samples)
 
         data_posterior = Posterior(
-            tec=tf.reshape(dtec_data_post[0], X_dim),
-            phase=tf.reshape(eff_phase_data, tf.concat([X_dim, [-1]], axis=0)),
-            weights_tec=tf.reshape(dtec_data_post[1], X_dim)
+            tec=dtec_data_post[0],
+            phase=eff_phase_data,
+            weights_tec=dtec_data_post[1],
+            clock = clock_post[0],
+            weights_clock = clock_post[1]
         )
 
         screen_posterior = Posterior(
-            tec=tf.reshape(dtec_screen_post[0], Xstar_dim),
-            phase=tf.reshape(eff_phase_screen, tf.concat([Xstar_dim, [-1]], axis=0)),
-            weights_tec=tf.reshape(dtec_screen_post[1], Xstar_dim)
+            tec=dtec_screen_post[0],
+            phase=eff_phase_screen,
+            weights_tec=dtec_screen_post[1],
+            clock=clock_post[0],
+            weights_clock=clock_post[1]
         )
 
         Performance = namedtuple('Performance', ['loss'])
@@ -635,8 +641,8 @@ class FreeTransitionVariationalBayes(object):
             screen_posterior=screen_posterior,
             solved_hyperparams=solved_hyperparams,
             next_param_warmstart=next_param_warmstart,
-            next_y_sigma=next_y_sigma,
             index=index,
+            next_y_sigma = y_sigma,
             next_index=next_index,
             mean_time=tf.reduce_mean(X[:, 0]),
             t=t,
@@ -650,16 +656,16 @@ class FreeTransitionVariationalBayes(object):
                solver_params=None,
                num_mcmc_param_samples_learn=1,
                num_mcmc_param_samples_infer=10,
-               y_sigma=0.043,
                minibatch_size=None
                ):
+
         t0 = timer()
 
         def body(cont, param_warmstart, y_sigma):
             t1 = timer()
             with tf.control_dependencies([t1]):
                 results = self.filter_step(param_warmstart,
-                                           tf.constant(0.02, float_type),#y_sigma
+                                           y_sigma,
                                            parallel_iterations=int(parallel_iterations),
                                            num_mcmc_param_samples_learn=num_mcmc_param_samples_learn,
                                            num_mcmc_param_samples_infer=num_mcmc_param_samples_infer,
@@ -683,6 +689,18 @@ class FreeTransitionVariationalBayes(object):
 
             store_callbacks = [
                 DatapackStoreCallback(self.datapack_feed.datapack,
+                                      self.datapack_feed.posterior_solset, 'clock',
+                                      (0, 2, 3, 1),  # pol,time,dir,ant->pol,dir,ant,time
+                                      lock=store_lock,
+                                      index_map=self.datapack_feed.index_map,
+                                      **self.datapack_feed.selection),
+                DatapackStoreCallback(self.datapack_feed.datapack,
+                                      self.datapack_feed.posterior_solset, 'weights_clock',
+                                      (0, 2, 3, 1),  # pol,time,dir,ant->pol,dir,ant,time
+                                      lock=store_lock,
+                                      index_map=self.datapack_feed.index_map,
+                                      **self.datapack_feed.selection),
+                DatapackStoreCallback(self.datapack_feed.datapack,
                                       self.datapack_feed.posterior_solset, 'tec',
                                       (0, 2, 3, 1),  # pol,time,dir,ant->pol,dir,ant,time
                                       lock=store_lock,
@@ -700,6 +718,18 @@ class FreeTransitionVariationalBayes(object):
                                       lock=store_lock,
                                       index_map=self.datapack_feed.index_map,
                                       **self.datapack_feed.selection),
+                DatapackStoreCallback(self.datapack_feed.datapack,
+                                      self.datapack_feed.screen_solset, 'clock',
+                                      (0, 2, 3, 1),  # pol,time,dir,ant->pol,dir,ant,time
+                                      lock=store_lock,
+                                      index_map=self.datapack_feed.index_map,
+                                      **self.datapack_feed.screen_selection),
+                DatapackStoreCallback(self.datapack_feed.datapack,
+                                      self.datapack_feed.screen_solset, 'weights_clock',
+                                      (0, 2, 3, 1),  # pol,time,dir,ant->pol,dir,ant,time
+                                      lock=store_lock,
+                                      index_map=self.datapack_feed.index_map,
+                                      **self.datapack_feed.screen_selection),
                 DatapackStoreCallback(self.datapack_feed.datapack,
                                       self.datapack_feed.screen_solset, 'tec',
                                       (0, 2, 3, 1),  # pol,time,dir,ant->pol,dir,ant,time
@@ -722,9 +752,13 @@ class FreeTransitionVariationalBayes(object):
                 StorePerformance(self.performance_store)
             ]
 
-            store_args = [(results.index, results.next_index, results.data_posterior.tec[None, ...]),
+            store_args = [(results.index, results.next_index, results.data_posterior.clock[None, ...]),
+                          (results.index, results.next_index, results.data_posterior.weights_clock[None, ...]),
+                          (results.index, results.next_index, results.data_posterior.tec[None, ...]),
                           (results.index, results.next_index, results.data_posterior.phase[None, ...]),
                           (results.index, results.next_index, results.data_posterior.weights_tec[None, ...]),
+                          (results.index, results.next_index, results.screen_posterior.clock[None, ...]),
+                          (results.index, results.next_index, results.screen_posterior.weights_clock[None, ...]),
                           (results.index, results.next_index, results.screen_posterior.tec[None, ...]),
                           (results.index, results.next_index, results.screen_posterior.phase[None, ...]),
                           (results.index, results.next_index, results.screen_posterior.weights_tec[None, ...]),
@@ -768,12 +802,12 @@ class FreeTransitionVariationalBayes(object):
                                                    "Solver rate:", iter_rate, "[seconds / solver step]"),
                                           store_op]):  # ,performance_op, plotres_op]):
                 return [tf.identity(results.cont), next_param_warmstart,
-                        results.next_y_sigma]
+                        y_sigma]
 
-        def cond(cont, param_warmstart, y_sigma):
+        def cond(cont, *unused_args):
             return cont
-
-        self._init_y_sigma = tf.convert_to_tensor(y_sigma, float_type, name='y_sigma_init')
+        #Nd, Na
+        self._init_y_sigma = tf.convert_to_tensor(self.datapack_feed.y_sigma, float_type, name='y_sigma')
 
         with tf.control_dependencies([t0]):
             cont, params_out, _ = tf.while_loop(cond,

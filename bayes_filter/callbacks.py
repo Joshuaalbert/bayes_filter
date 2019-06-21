@@ -228,16 +228,16 @@ class StoreHyperparameters(Callback):
         store_file=os.path.abspath(store_file)
 
         np.savez(store_file, times=np.array([]), amp=np.array([]), y_sigma=np.array([]), variance=np.array([]), lengthscales=np.array([]), a=np.array([]), b=np.array([]), timescale=np.array([]),
-                 pert_amp=np.array([]), pert_dir_lengthscale=np.array([]), pert_ant_lengthscale=np.array([]))
+                 )
 
 
         self.output_dtypes = [tf.int64]
         self.name = 'StoreHyperparameters'
 
-        def store(time, hyperparams, y_sigma, amp,pert_amp, pert_dir_lengthscale, pert_ant_lengthscale):
+        def store(time, hyperparams, y_sigma, amp):
             data = np.load(store_file)
             #must match the order in the Target
-            variance, lengthscales, a, b, timescale,pert_amp, pert_dir_lengthscale, pert_ant_lengthscale = np.reshape(hyperparams, (-1,))
+            variance, lengthscales, a, b, timescale = np.reshape(hyperparams, (-1,))
 
             times = np.array([time] + list(data['times']))
             y_sigma = np.array([np.reshape(y_sigma,(-1,))] + list(data['y_sigma']))
@@ -276,13 +276,13 @@ class StoreHyperparametersV2(Callback):
         store_file=os.path.abspath(store_file)
         if not os.path.exists(store_file):
             np.savez(store_file, times=np.array([]), amp=np.array([]), y_sigma=np.array([]), variance=np.array([]), lengthscales=np.array([]), a=np.array([]), b=np.array([]), timescale=np.array([]),
-                     pert_amp=np.array([]), pert_dir_lengthscale=np.array([]), pert_ant_lengthscale=np.array([]))
+                     clock_scale=np.array([]))
 
 
         self.output_dtypes = [tf.int64]
         self.name = 'StoreHyperparametersV2'
 
-        def store(time, amp, lengthscales, a, b, timescale, y_sigma):
+        def store(time, amp, lengthscales, a, b, timescale, clock_scale, y_sigma):
             data = np.load(store_file)
 
             times = np.array([time] + list(data['times']))
@@ -292,6 +292,7 @@ class StoreHyperparametersV2(Callback):
             a = np.array([a.reshape((-1,))] + list(data['a']))
             b = np.array([b.reshape((-1,))] + list(data['b']))
             timescale = np.array([timescale.reshape((-1,))] + list(data['timescale']))
+            clock_scale = np.array([clock_scale.reshape((-1,))] + list(data['clock_scale']))
 
             np.savez(store_file,
                      times=times,
@@ -300,7 +301,8 @@ class StoreHyperparametersV2(Callback):
                      lengthscales=lengthscales,
                      a=a,
                      b=b,
-                     timescale=timescale
+                     timescale=timescale,
+                     clock_scale=clock_scale
                      )
 
             return [np.array(len(times),dtype=np.int64)]
@@ -341,7 +343,7 @@ class PlotResults(Callback):
             """
 
             data = np.load(hyperparam_store)
-            keys = ['amp','y_sigma','variance', 'lengthscales', 'a', 'b', 'timescale']
+            keys = ['amp','y_sigma','variance', 'lengthscales', 'a', 'b', 'timescale', 'clock_scale']
             if lock is not None:
                 lock.acquire()
             fig, axs = plt.subplots(len(keys),1,sharex='all', figsize=(6,len(keys)*2))
@@ -477,10 +479,10 @@ class PlotResultsV2(Callback):
             index_end = index_map[index_end-1] + 1
 
             data = np.load(hyperparam_store)
-            keys = ['amp','y_sigma', 'lengthscales', 'a', 'b', 'timescale']
+            keys = ['amp','y_sigma', 'lengthscales', 'a', 'b', 'timescale', 'clock_scale']
             if lock is not None:
                 lock.acquire()
-            fig, axs = plt.subplots(len(keys),1,sharex='all', figsize=(9,len(keys)*2))
+            fig, axs = plt.subplots(len(keys),1,sharex='all', figsize=(7,len(keys)*2))
             for i,key in enumerate(keys):
                 ax = axs[i]
                 ax.scatter(data['times'], data[key].flatten(),label=key)
