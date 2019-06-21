@@ -72,10 +72,9 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
         freqs = tf.constant(freqs, float_type, name='freqs')
         data_uncert = tf.constant(gain_uncert, float_type, name='data_uncert')
         tec_conv = tf.constant(-8.4479745e6, float_type) * tf.math.reciprocal(freqs)
-        clock_conv = tf.constant(2. * np.pi * 1e-9, float_type) * freqs
 
-        def neg_log_prob(tec, clock):
-            phase_m = tec_conv * tec[..., None] + clock_conv * clock[..., None]
+        def neg_log_prob(tec):
+            phase_m = tec_conv * tec[..., None]
             Yimag_m = amp_pl * tf.sin(phase_m)
             Yreal_m = amp_pl * tf.cos(phase_m)
 
@@ -83,61 +82,38 @@ def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2
             Yimag_like = tfp.distributions.Laplace(loc=Yimag_pl, scale=gain_uncert_pl).log_prob(Yimag_m)
             # B, Nd, Na, Npol, Nt, Nf
             Yreal_like = tfp.distributions.Laplace(loc=Yreal_pl, scale=gain_uncert_pl).log_prob(Yreal_m)
-            # B, 1, Na, Npol, Nt-1
-            diff_clock_prior = tfp.distributions.Normal(loc=clock[..., 1:],
-                                                        scale=tf.constant(0.02, float_type)).log_prob(clock[..., :-1])
             # B, Nd, Na, Npol, Nt
             tec_prior = tfp.distributions.Normal(loc=tf.constant(0., float_type),
                                                  scale=tf.constant(55., float_type)).log_prob(tec)
-            # B, 1, Na, Npol, Nt
-            clock_prior = tfp.distributions.Normal(loc=tf.constant(0., float_type),
-                                                   scale=tf.constant(1., float_type)).log_prob(clock)
 
-            likelihood = tf.reduce_sum(tf.reduce_mean(Yimag_like, axis=-1) + tf.reduce_mean(Yreal_like, axis=-1),
-                                       axis=[1, 2, 3, 4]) \
-                         + tf.reduce_sum(clock_prior, axis=[1, 2, 3, 4])
-            # \
-                         # + tf.reduce_sum(diff_clock_prior, axis=[1, 2, 3, 4]) \
 
+            likelihood = tf.reduce_mean(Yimag_like, axis=-1) + tf.reduce_mean(Yreal_like, axis=-1)
             loss = -likelihood
             return loss
 
-        init_state = [55. * tf.random.normal((num_replicates, Nd, Na, Npol, Nt), dtype=float_type),
-                      1. * tf.random.normal((num_replicates, Nd, Na, Npol, Nt), dtype=float_type),
-                      ]
+        search_space = tf.cast(tf.linspace(-200., 200., int(400./0.1) + 1), float_type)
+        search_space = tf.tile(search_space[:,None,None,None,None],(1, Nd, Na, Npol, Nt))
+        search_results = neg_log_prob(search_space)
 
-        optim_results = tfp.optimizer.differential_evolution_minimize(neg_log_prob,
-                                                                      init_state,
-                                                                      max_iterations=max_iters,
-                                                                      position_tolerance=1e-3,
-                                                                      seed=0)
+        search_results = tf.reshape(search_results, (-1, Nd*Na*Npol*Nt))
+        search_space = tf.reshape(search_space, (-1, Nd * Na * Npol * Nt))
 
-        # (final_tec, final_clock), loss = adam_stochastic_gradient_descent_with_linesearch_batched(num_replicates,
-        #                                                                                           neg_log_prob,
-        #                                                                                           init_state,
-        #                                                                                           learning_rate=learning_rate,
-        #                                                                                           iters=max_iters,
-        #                                                                                           stop_patience=stop_patience,
-        #                                                                                           patience_percentage=patience_percentage)
-        #
-        #
-        #
-        # final_loss = neg_log_prob(final_tec, final_clock)
-        # argmin = tf.argmin(final_loss)
-        # final_tec = final_tec[argmin,...]#tf.gather(final_tec, argmin, axis=0)
-        # final_clock = final_clock[argmin,...]#tf.gather(final_clock, argmin, axis=0)
+        argmin = tf.argmin(search_results,axis=0)
+        brute_solutions = tf.gather_nd(search_space,
+                     tf.stack([argmin, tf.range(tf.size(argmin, out_type=tf.int64), dtype=tf.int64)], axis=1))
+        brute_solutions = tf.reshape(brute_solutions, ( Nd, Na, Npol, Nt))
+        final_loss = tf.reduce_min(search_results, axis=0)
 
 
-        clock_perm = (2, 0, 1, 3)
         tec_perm = (2, 0, 1, 3)
 
-        (tec, clock), final_loss, converged, num_eval = sess.run([optim_results.position, optim_results.objective_value, optim_results.converged, optim_results.num_iterations],
+        tec, final_loss = sess.run([brute_solutions, final_loss],
                                             feed_dict={Yimag_pl: Yimag.astype(np.float64),
                                                        Yreal_pl: Yreal.astype(np.float64),
                                                        amp_pl: amplitude,
                                                        gain_uncert_pl: gain_uncert[:, :, None, None, None]})
 
-        return tec.transpose(tec_perm), clock.transpose(clock_perm), final_loss, converged, num_eval
+        return tec.transpose(tec_perm), final_loss
 
 
 if __name__ == '__main__':
@@ -164,6 +140,7 @@ if __name__ == '__main__':
     # Npol, Nd, Na, Nf, Nt
     datapack_raw.select(**select)
     phase_raw, axes = datapack_raw.phase
+    phase_di = phase_raw[:, 14:15,...]# np.mean(phase_raw, axis=1, keepdims=True)
     amp_raw, axes = datapack_raw.amplitude
     timestamps, times = datapack_raw.get_times(axes['time'])
     _, freqs = datapack_raw.get_freqs(axes['freq'])
@@ -187,53 +164,26 @@ if __name__ == '__main__':
         Yimag = Yimag_full[..., time_slice]
         Yreal = Yreal_full[..., time_slice]
 
-        tec, clock, loss, converged, num_eval = infer_tec_and_clock(freqs, Yimag, Yreal,
-                                               gain_uncert=gain_uncert,
-                                               learning_rate=0.01,
-                                               max_iters=2,
-                                               stop_patience=50,
-                                               patience_percentage=1e-6,
-                                               num_replicates=200)
+        tec, loss = infer_tec_and_clock(freqs, Yimag, Yreal,
+                                       gain_uncert=gain_uncert,
+                                       learning_rate=0.01,
+                                       max_iters=2000,
+                                       stop_patience=50,
+                                       patience_percentage=1e-6,
+                                       num_replicates=200)
 
-        logging.info("Iteration {}: coverged: {}, num iters: {}, final loss min: {}".format(i, converged, num_eval, loss))
+        logging.info("Iteration {}: final loss min: {}".format(i,  loss))
 
         tec_conv = -8.4479745e6 / freqs[:, None]
-        clock_conv = 2 * np.pi * freqs[:, None] * 1e-9
 
-        phase = tec[..., None, :] * tec_conv + clock[..., None, :] * clock_conv
+        phase = tec[..., None, :] * tec_conv + phase_di[..., time_slice]
 
         save_tec.append(tec)
-        save_clock.append(clock)
         save_phase.append(phase)
 
-        if i % save_freq == 0:
-            _save_tec = np.concatenate(save_tec, axis=-1)
-            _save_clock = np.concatenate(save_clock, axis=-1)
-            _save_phase = np.concatenate(save_phase, axis=-1)
-
-            select = dict(dir=slice(None, None, 1),
-                          ant=slice(None, None, 1),
-                          time=slice(0, min(i + block_size, Nt), 1),
-                          freq=slice(None, None, 1),
-                          pol=slice(0, 1, 1))
-
-            datapack_save = DataPack(input_datapack, readonly=False)
-            datapack_save.current_solset = 'data_posterior'
-            # Npol, Nd, Na, Nf, Nt
-            datapack_save.select(**select)
-            datapack_save.phase = _save_phase
-            datapack_save.tec = _save_tec
-            datapack_save.clock = _save_clock[:, :, :, :]
-
     _save_tec = np.concatenate(save_tec, axis=-1)
-    _save_clock = np.concatenate(save_clock, axis=-1)
     _save_phase = np.concatenate(save_phase, axis=-1)
 
-    select = dict(dir=slice(None, None, 1),
-                  ant=slice(None, None, 1),
-                  time=slice(0, Nt, 1),
-                  freq=slice(None, None, 1),
-                  pol=slice(0, 1, 1))
 
     datapack_save = DataPack(input_datapack, readonly=False)
     datapack_save.current_solset = 'data_posterior'
@@ -241,4 +191,3 @@ if __name__ == '__main__':
     datapack_save.select(**select)
     datapack_save.phase = _save_phase
     datapack_save.tec = _save_tec
-    datapack_save.clock = _save_clock[:, :, :, :]
