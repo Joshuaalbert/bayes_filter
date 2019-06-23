@@ -50,11 +50,11 @@ def build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_unc
         var_exp = np.sum(log_prob * w)
         # Get KL
         q_var = np.square(tec_uncert)
-        trace = q_var
-        mahalanobis = np.square(tec_mean)
+        trace = q_var/tec_uncert_prior**2
+        mahalanobis = (tec_mean - tec_mean_prior)**2 /tec_uncert_prior**2
         constant = -1.
-        logdet_qcov = np.log(q_var)
-        twoKL = mahalanobis + constant - logdet_qcov + trace
+        logdet_qcov = np.log(tec_uncert_prior**2 / q_var)
+        twoKL = mahalanobis + constant + logdet_qcov + trace
         tec_prior_KL = 0.5 * twoKL
         loss = np.negative(var_exp - tec_prior_KL)
         return loss
