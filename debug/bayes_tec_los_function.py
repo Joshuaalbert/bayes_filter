@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=0.1,S=20):
+def build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=100.,S=20):
     """
     This function builds the loss function.
     Simple use case:
@@ -60,5 +60,3 @@ def build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_unc
         return loss
 
     return loss_func
-
-

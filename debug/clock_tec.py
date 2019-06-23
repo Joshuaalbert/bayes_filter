@@ -9,111 +9,143 @@ from bayes_filter.sgd import adam_stochastic_gradient_descent_with_linesearch_ba
 from bayes_filter.misc import maybe_create_posterior_solsets, get_screen_directions, flatten_batch_dims
 import pylab as plt
 from bayes_filter import float_type, logging
+from scipy.optimize import brute, fmin
+from bayes_filter.coord_transforms import ITRSToENUWithReferences
 
 
-# import pymc3 as pm
-#
-# def infer_tec_and_clock_pymc3(freqs, Yimag, Yreal, per_dir_clock=False, gain_uncert=0.02, learning_rate=0.2, max_iters=1000, search_size=10, stop_patience=5, patient_percentage=1e-3, num_replicates=32):
-#     # Npol, Nd, Na, Nf, Nt -> Nd, Na, Npol, Nt, Nf
-#     Yimag = np.transpose(Yimag, (1, 2, 0, 4, 3))
-#     Yreal = np.transpose(Yreal, (1, 2, 0, 4, 3))
-#     shape = Yimag.shape
-#     Nd, Na, Npol, Nt, Nf = shape
-#     # # Nd, Nt*Na*Npol, Nf
-#     # Yimag = Yimag.reshape((Nd, Nt * Na * Npol, Nf))
-#     # Yreal = Yreal.reshape((Nd, Nt * Na * Npol, Nf))
-#     tec_conv = -8.4479745e6/freqs
-#     clock_conv = 2. * np.pi *   freqs
-#     # Nd, Nt*Na*Npol
-#     tec_init = np.mean(np.arctan2(Yimag, Yreal) / tec_conv, axis=-1)
-#
-#     with pm.Model() as model:
-#         clock_uncert = pm.Exponential('clock_uncert', 1., shape=(Nd, Na,1, Nt), testval=1.)
-#         tec_uncert = pm.Exponential('tec_uncert', 1. / 10., shape=(Nd, Na, 1, Nt), testval=10.)
-#
-#         clock = pm.Deterministic('clock', clock_uncert * pm.Normal('clock_', shape=(Nd, Na,1, Nt)))
-#         tec_ = tec_uncert * pm.Normal('tec_', shape=(Nd, Na,1,Nt))
-#
-#         tec = pm.Deterministic('tec', tec_ + tec_init)
-#
-#         phase0 = tec[..., None] * tec_conv + clock[..., None] * clock_conv
-#         phase_m = pm.Deterministic('phase', phase0 - pm.math.tt.tile(phase0[:, 0:1, :], (1, 62, 1, 1, 1)))
-#
-#         data_uncert = pm.Exponential('b', 1 / 0.07, testval=0.1, shape=(Nd, Na, 1,1,1))
-#
-#         data = pm.Laplace('Yimag', mu=pm.math.sin(phase_m), b=data_uncert, observed=Yimag) + pm.Laplace('Yreal',
-#                                                                                                         mu=pm.math.cos(
-#                                                                                                             phase_m),
-#                                                                                                         b=data_uncert,
-#                                                                                                         observed=Yreal)
-#
-#         state0 = pm.find_MAP(maxeval=10000)
-#         clock_perm = (2, 0, 1, 3)
-#         tec_perm = (2, 0, 1, 3)
-#     return state0['tec'].transpose(tec_perm), state0['clock'].transpose(clock_perm), None
+import pymc3 as pm
+from dask.multiprocessing import get
+from functools import partial
 
-def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, learning_rate=0.2, max_iters=1000, stop_patience=5,
-                        patience_percentage=1e-3, num_replicates=32):
-    # Npol, Nd, Na, Nf, Nt -> Nd, Na, Npol, Nt, Nf
-    Yimag = np.transpose(Yimag, (1, 2, 0, 4, 3))
-    Yreal = np.transpose(Yreal, (1, 2, 0, 4, 3))
-    shape = Yimag.shape
-    Nd, Na, Npol, Nt, Nf = shape
-    tec_conv = -8.4479745e6 / freqs
-    clock_conv = 2. * np.pi * freqs * 1e-9
-    amplitude = np.sqrt(Yimag ** 2 + Yreal ** 2)
-
-    with tf.Session(graph=tf.Graph()) as sess:
-        gain_uncert_pl = tf.placeholder(float_type, shape=(Nd, Na, 1, 1, 1), name='amp')
-        amp_pl = tf.placeholder(float_type, shape=(Nd, Na, Npol, Nt, Nf), name='amp')
-        Yimag_pl = tf.placeholder(float_type, shape=(Nd, Na, Npol, Nt, Nf), name='Yimag')
-        Yreal_pl = tf.placeholder(float_type, shape=(Nd, Na, Npol, Nt, Nf), name='Yreal')
-
-        freqs = tf.constant(freqs, float_type, name='freqs')
-        data_uncert = tf.constant(gain_uncert, float_type, name='data_uncert')
-        tec_conv = tf.constant(-8.4479745e6, float_type) * tf.math.reciprocal(freqs)
-
-        def neg_log_prob(tec):
-            phase_m = tec_conv * tec[..., None]
-            Yimag_m = amp_pl * tf.sin(phase_m)
-            Yreal_m = amp_pl * tf.cos(phase_m)
-
-            # B, Nd, Na, Npol, Nt, Nf
-            Yimag_like = tfp.distributions.Laplace(loc=Yimag_pl, scale=gain_uncert_pl).log_prob(Yimag_m)
-            # B, Nd, Na, Npol, Nt, Nf
-            Yreal_like = tfp.distributions.Laplace(loc=Yreal_pl, scale=gain_uncert_pl).log_prob(Yreal_m)
-            # B, Nd, Na, Npol, Nt
-            tec_prior = tfp.distributions.Normal(loc=tf.constant(0., float_type),
-                                                 scale=tf.constant(55., float_type)).log_prob(tec)
+import numpy as np
 
 
-            likelihood = tf.reduce_mean(Yimag_like, axis=-1) + tf.reduce_mean(Yreal_like, axis=-1)
-            loss = -likelihood
-            return loss
+def build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=100.,S=20):
+    """
+    This function builds the loss function.
+    Simple use case:
+    # loop over data
+    loss_fn = build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=0.1,S=20)
+    #brute force
+    tec_mean, tec_uncert = brute(loss_fn, (slice(-200, 200,1.), slice(np.log(0.01), np.log(10.), 1.), finish=fmin)
+    #The results are Bayesian estimates of tec mean and uncert.
 
-        search_space = tf.cast(tf.linspace(-200., 200., int(400./0.1) + 1), float_type)
-        search_space = tf.tile(search_space[:,None,None,None,None],(1, Nd, Na, Npol, Nt))
-        search_results = neg_log_prob(search_space)
+    :param Yreal: np.array shape [Nf]
+        The real data (including amplitude)
+    :param Yimag: np.array shape [Nf]
+        The imag data (including amplitude)
+    :param freqs: np.array shape [Nf]
+        The freqs in Hz
+    :param gain_uncert: float
+        The uncertainty of gains.
+    :param tec_mean_prior: float
+        the prior mean for tec in mTECU
+    :param tec_uncert_prior: float
+        the prior tec uncert in mTECU
+    :param S: int
+        Number of hermite terms for Guass-Hermite quadrature
+    :return: callable function of the form
+        func(params) where params is a tuple or list with:
+            params[0] is tec_mean in mTECU
+            params[1] is log_tec_uncert in log[mTECU]
+        The return of the func is a scalar loss to be minimised.
+    """
 
-        search_results = tf.reshape(search_results, (-1, Nd*Na*Npol*Nt))
-        search_space = tf.reshape(search_space, (-1, Nd * Na * Npol * Nt))
+    x, w = np.polynomial.hermite.hermgauss(S)
+    w / np.pi
+    tec_conv = -8.4479745e6/freqs
 
-        argmin = tf.argmin(search_results,axis=0)
-        brute_solutions = tf.gather_nd(search_space,
-                     tf.stack([argmin, tf.range(tf.size(argmin, out_type=tf.int64), dtype=tf.int64)], axis=1))
-        brute_solutions = tf.reshape(brute_solutions, ( Nd, Na, Npol, Nt))
-        final_loss = tf.reduce_min(search_results, axis=0)
+    amp = np.sqrt(Yreal**2 + Yimag**2)
+
+    def loss_func(params):
+        tec_mean, log_tec_uncert = params
+        tec_uncert = np.exp(log_tec_uncert)
+        tec = tec_mean + np.sqrt(2.) * tec_uncert * x
+        phase = tec[:, None] * tec_conv
+        Yreal_m = amp * np.cos(phase)
+        Yimag_m = amp * np.sin(phase)
+        log_prob = -np.mean(np.abs(Yreal - Yreal_m) +
+                            np.abs(Yimag - Yimag_m), axis=-1) / gain_uncert - np.log(2. * gain_uncert)
+        var_exp = np.sum(log_prob * w)
+        # Get KL
+        q_var = np.square(tec_uncert)
+        trace = q_var/tec_uncert_prior**2
+        mahalanobis = (tec_mean - tec_mean_prior)**2 /tec_uncert_prior**2
+        constant = -1.
+        logdet_qcov = np.log(tec_uncert_prior**2 / q_var)
+        twoKL = mahalanobis + constant + logdet_qcov + trace
+        tec_prior_KL = 0.5 * twoKL
+        loss = np.negative(var_exp - tec_prior_KL)
+        return loss
+
+    return loss_func
 
 
-        tec_perm = (2, 0, 1, 3)
+def infer_tec_and_clock(freqs, Yimag, Yreal, gain_uncert=0.02, S=20, ref_dir=14):
+    tec_conv = -8.4479745e6/freqs
+    Npol, Nd, Na, Nf, Nt = Yimag.shape
 
-        tec, final_loss = sess.run([brute_solutions, final_loss],
-                                            feed_dict={Yimag_pl: Yimag.astype(np.float64),
-                                                       Yreal_pl: Yreal.astype(np.float64),
-                                                       amp_pl: amplitude,
-                                                       gain_uncert_pl: gain_uncert[:, :, None, None, None]})
+    phase = np.arctan2(Yimag, Yreal)
+    phase_di = phase[:, ref_dir:ref_dir+1, ...] if ref_dir is not None else np.mean(phase, axis=1, keepdims=True)
+    phase_dd = phase - phase_di
+    amp = np.sqrt(np.square(Yimag) + np.square(Yreal))
+    Yreal_data = amp*np.cos(phase_dd)
+    Yimag_data = amp*np.sin(phase_dd)
 
-        return tec.transpose(tec_perm), final_loss
+    def solve_all_time(ant,dir):
+        res = []
+        tec_mean_prior = 0.
+        tec_uncert_prior = 100.
+        for time in range(Nt):
+            loss_fn = build_loss(Yreal_data[0, dir, ant, :, time], Yimag_data[0, dir, ant, :, time], freqs,
+                                 gain_uncert=gain_uncert[dir, ant], tec_mean_prior=tec_mean_prior, tec_uncert_prior=tec_uncert_prior, S=20)
+
+            tec_mean, log_tec_uncert = brute(loss_fn, (slice(-200., 200., 1.), slice(np.log(0.01), np.log(10.), 1.)),
+                                             finish=fmin)
+            tec_uncert = np.exp(log_tec_uncert)
+            tec_mean_prior = tec_mean
+            tec_uncert_prior = np.sqrt(tec_uncert**2 + 10.**2)
+            logging.info("Soltuion ant: {} dir: {} time: {} tec: {} +- {}".format(ant, dir, time, tec_mean, tec_uncert))
+            res.append([tec_mean, tec_uncert])
+        return np.array(res)
+
+    logging.info("Constructing the dask of size: {}".format((Nd,Na,Nt)))
+    dsk = {}
+    get_idx = []
+    c = 0
+    for d in range(Nd):
+        for a in range(Na):
+            dsk[str(c)] = (solve_all_time, a, d)
+            get_idx.append(str(c))
+            c += 1
+    logging.info("Running the dask on all cores")
+
+    results = get(dsk, get_idx, num_workers=None)
+    logging.info("Completed the dask")
+    # print(np.array([p[0] for p in results]))
+    tec_mean = np.stack([p[:,0] for p in results], axis=0).reshape((Npol, Nd, Na, Nt))
+    tec_std = np.stack([p[:,1] for p in results], axis=0).reshape((Npol, Nd, Na, Nt))
+    phase_mean = tec_mean[...,None,:]*tec_conv[:,None] + phase_di
+    phase_std = tec_std[..., None, :]*tec_conv[:, None]
+    logging.info("Returning results")
+
+    return tec_mean, tec_std, phase_mean, phase_std
+
+
+def solve_tec_screen(tec_mean, tec_uncert, X, reference_location, reference_direction):
+    """
+    Solves the tec screen problem using the DTEC kernel model.
+
+    :param tec_mean: tf.Tensor
+        Mean of DDTEC shape [Nd, Na] (mTECU)
+    :param tec_uncert: tf.Tensor
+        Uncertainty of DDTEC shape [Nd, Na] (mTECU)
+    :param X: tf.Tensor
+        Coordinates shape [Nd, Na, 6] with elements {time, kx, ky, kz, x, y, z}
+    :return: tuple of tf.Tensor
+
+    """
+    ITRSToENUWithReferences()
 
 
 if __name__ == '__main__':
@@ -131,7 +163,7 @@ if __name__ == '__main__':
 
     select = dict(dir=slice(None, None, 1),
                   ant=slice(None, None, 1),
-                  time=slice(0, Nt, 1),
+                  time=slice(None, None, 1),
                   freq=slice(None, None, 1),
                   pol=slice(0, 1, 1))
 
@@ -140,7 +172,6 @@ if __name__ == '__main__':
     # Npol, Nd, Na, Nf, Nt
     datapack_raw.select(**select)
     phase_raw, axes = datapack_raw.phase
-    phase_di = phase_raw[:, 14:15,...]# np.mean(phase_raw, axis=1, keepdims=True)
     amp_raw, axes = datapack_raw.amplitude
     timestamps, times = datapack_raw.get_times(axes['time'])
     _, freqs = datapack_raw.get_freqs(axes['freq'])
@@ -152,6 +183,8 @@ if __name__ == '__main__':
         0.25 * np.mean(np.abs(np.diff(Yimag_full, axis=-1)) + np.abs(np.diff(Yreal_full, axis=-1)), axis=-1).mean(
             -1).mean(0), 0.02)
 
+
+
     block_size = 1
     save_freq = 1
 
@@ -159,35 +192,15 @@ if __name__ == '__main__':
     save_clock = []
     save_phase = []
 
-    for i in range(0, Nt, block_size):
-        time_slice = slice(i, min(i + block_size, Nt), 1)
-        Yimag = Yimag_full[..., time_slice]
-        Yreal = Yreal_full[..., time_slice]
+    tec_mean, tec_std, phase_mean, phase_std = infer_tec_and_clock(freqs, Yimag_full, Yreal_full, gain_uncert=gain_uncert)
 
-        tec, loss = infer_tec_and_clock(freqs, Yimag, Yreal,
-                                       gain_uncert=gain_uncert,
-                                       learning_rate=0.01,
-                                       max_iters=2000,
-                                       stop_patience=50,
-                                       patience_percentage=1e-6,
-                                       num_replicates=200)
-
-        logging.info("Iteration {}: final loss min: {}".format(i,  loss))
-
-        tec_conv = -8.4479745e6 / freqs[:, None]
-
-        phase = tec[..., None, :] * tec_conv + phase_di[..., time_slice]
-
-        save_tec.append(tec)
-        save_phase.append(phase)
-
-    _save_tec = np.concatenate(save_tec, axis=-1)
-    _save_phase = np.concatenate(save_phase, axis=-1)
-
-
+    logging.info("Storing results")
     datapack_save = DataPack(input_datapack, readonly=False)
     datapack_save.current_solset = 'data_posterior'
     # Npol, Nd, Na, Nf, Nt
     datapack_save.select(**select)
-    datapack_save.phase = _save_phase
-    datapack_save.tec = _save_tec
+    datapack_save.phase = phase_mean
+    datapack_save.weights_phase = phase_std
+    datapack_save.tec = tec_mean
+    datapack_save.weights_tec = tec_std
+    logging.info("Stored results. Done")
