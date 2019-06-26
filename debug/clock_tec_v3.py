@@ -56,11 +56,12 @@ def build_brute_finish(radius, steps, finish=None, vectorized=True):
         return tf_brute(fn, ranges, finish=finish, vectorized=vectorized)
     return recursion
 
-def helper_brute_recursion(levels, init_radius, init_steps, shrinkage=0.1, vectorized=True):
+def helper_brute_recursion(levels, init_radius, shrinkage=0.1, vectorized=True):
     finishers = [None]
+    #radius_0*shrinkage^(t-1), radius_0*shrinkage^t
     for l in range(1,levels+1, 1)[::-1]:
-        solve_fn = build_brute_finish([tf.convert_to_tensor(r*shrinkage**l, float_type) for r in init_radius],
-                                      [tf.convert_to_tensor(s*shrinkage**l, float_type) for s in init_steps],
+        solve_fn = build_brute_finish([tf.convert_to_tensor(r*shrinkage**(l-1), float_type) for r in init_radius],
+                                      [tf.convert_to_tensor(r*shrinkage**l, float_type) for r in init_radius],
                                       finish=finishers[-1],
                                       vectorized=vectorized)
         finishers.append(solve_fn)
@@ -209,14 +210,14 @@ class TecSolve(object):
                                 self.freqs,
                                 gain_uncert=self.gain_uncert[dir, ant], tec_mean_prior=tec_mean_prior,
                                 tec_uncert_prior=tec_uncert_prior, S=self.S)
-            brute_solver = help_brute_adam([200., 2.], [5., 0.2], vectorized=True)
+            # brute_solver = help_brute_adam([200., 2.], [5., 0.2], vectorized=True)
             # brute_solver = help_brute_bfgs([200., 2.], [5., 0.2], vectorized=True)
-            # brute_solver = helper_brute_recursion(3, [200., 2.], [5., 0.2], shrinkage=0.1, vectorized=True)
+            brute_solver = helper_brute_recursion(3, [200., 2.], shrinkage=1/15., vectorized=True)
             params = brute_solver(loss.loss_func, [0., np.log(1.)])
             tec_mean, tec_uncert = params[0], tf.math.exp(params[1])
             next_tec_mean_prior = tec_mean
             next_tec_uncert_prior = tf.math.sqrt(tf.math.square(tec_uncert) + 50.**2)
-            return [time + 1, next_tec_mean_prior, next_tec_uncert_prior, tec_mean_ta.write(time, next_tec_mean_prior), tec_uncert_ta.write(time, next_tec_uncert_prior)]
+            return [time + 1, next_tec_mean_prior, next_tec_uncert_prior, tec_mean_ta.write(time, tec_mean), tec_uncert_ta.write(time, tec_uncert)]
 
         def cond(time , *args):
             return time < tf.shape(self.Yimag_data)[-1]
@@ -397,9 +398,9 @@ class ResidualSmooth(object):
         def body(time, smooth_residual_mean_ta, smooth_residual_uncert_ta):
             loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, time], self.freqs)
             #noise, sigma, lengthscale, mean
-            brute_solver = help_brute_adam([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
+            # brute_solver = help_brute_adam([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
             # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
-            # brute_solver = helper_brute_recursion(3, [2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], shrinkage=0.1, vectorized=True)
+            brute_solver = helper_brute_recursion(3, [3., 3., 3., 0.3], shrinkage=0.2, vectorized=True)
             params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.1), np.log(5.), 0.])
             smoothed_phase_mean, smoothed_phase_uncert = loss.smooth_func(params)
 
@@ -479,7 +480,7 @@ if __name__ == '__main__':
     gain_uncert = 0.07*np.ones((Nd,Na))
 
     logging.info('Constructing graph')
-    with tf.Session(graph=tf.Graph()) as sess:
+    with tf.Session(graph=tf.Graph(), config=tf.ConfigProto(allow_soft_placement=True)) as sess:
         Yreal_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
         Yimag_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
         freqs_pl = tf.placeholder(float_type, shape=(Nf,))
@@ -488,8 +489,8 @@ if __name__ == '__main__':
 
         phase_raw = tf.atan2(Yimag_pl, Yreal_pl)
 
-        tec_system_solver = TecSystemSolve(freqs_pl, Yimag_pl, Yreal_pl, gain_uncert_pl, S=20, per_ref_parallel_iterations=48)
-        tec_solution, tec_uncert_solution = tec_system_solver.run(lstsq_parallel_iterations=48)
+        tec_system_solver = TecSystemSolve(freqs_pl, Yimag_pl, Yreal_pl, gain_uncert_pl, S=20, per_ref_parallel_iterations=6)
+        tec_solution, tec_uncert_solution = tec_system_solver.run(lstsq_parallel_iterations=6)
 
         #Npol, Nd, Na, Nf, Nt
         phase_dd_mean = tec_solution[..., None, :] * tec_conv[:, None]
@@ -498,7 +499,7 @@ if __name__ == '__main__':
 
         residual_smoother = ResidualSmooth(freqs_pl, phase_res)
         #Npol, Nd, Na, Nf, Nt
-        residual_mean, residual_uncert = residual_smoother.run(smoother_parallel_iterations=48)
+        residual_mean, residual_uncert = residual_smoother.run(smoother_parallel_iterations=6)
 
         final_phase_mean = phase_dd_mean + residual_mean
         final_phase_uncert = tf.math.sqrt(tf.math.square(phase_dd_uncert) + tf.math.square(residual_uncert))
