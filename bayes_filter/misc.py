@@ -21,6 +21,49 @@ from .kernels import DTECIsotropicTimeGeneral
 from .settings import angle_type, dist_type
 from scipy.special import erfinv
 
+
+def laplace_gaussian_marginalisation(L, y, order = 10):
+    """
+    Evaluate int_R^N prod_i^N L(y^i | x^i) N[x | 0, L.L^T] dx
+    reparametrises as,
+
+    int_R^M prod_i^N 1/(2 b^i) Exp[ |y^i - sqrt[2] L^i.u| - u.u ] pi^(-M/2) du
+
+
+    :param L:
+        shape [N, N]
+    :param y:
+        shape [N]
+    :return:
+    """
+    if order > 10:
+        raise ValueError("Order {} must be less than or equal to 10".format(order))
+
+    N = tf.cast(tf.shape(y)[0], float_type)
+    #N
+    Ny = N*y
+    #N
+    halfLL = 0.5*tf.reduce_sum(tf.math.square(L), axis=-1)
+    #N, N
+    erf_arg = L/np.sqrt(2.) - y[:,None]/L
+    # approx log(1 - erf(erf_arg))
+    poly_coeffs_1 = np.array([0.,
+                              -2./np.sqrt(np.pi),
+                              -2./np.pi,
+                              2.*(np.pi - 4)/(3.*np.pi**(3./2.)),
+                              4.*(np.pi - 3.)/(3. * np.pi**2),
+                              (-96. + 40.*np.pi - 3.*np.pi**2)/(15.*np.pi**(5./2.)),
+                              -4.*(120. - 60.*np.pi + 7.*np.pi**2)/(45. * np.pi**3),
+                              (-5760. + 3360.*np.pi - 532. * np.pi**2 + 15.*np.pi**3)/(315.*np.pi**(7./2.)),
+                              8.*(-420. + 280.*np.pi - 56.*np.pi**2 + 3. * np.pi**3)/(105.*np.pi**4.),
+                              (-645120. + 483840.*np.pi - 116928.*np.pi**2 + 9328.*np.pi**3. - 105. * np.pi**4)/(11340. * np.pi**(9./2.)),
+                              4.*(120960. - 100800*np.pi + 28560. * np.pi**2 - 3040.*np.pi**3 + 83.*np.pi**4)/(4725. * np.pi**5)], dtype=np.float64)
+    # approx log(1 + erf(erf_arg))
+    poly_coeffs_2 = np.array([ -c if i%2 == 1 else c for i,c in enumerate(poly_coeffs_1)], float_type)
+    #TODO: finish the function
+
+
+
 def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_name: str,
                                    screen_directions = None, srl_file = None,
                                         remake_posterior_solsets=False):

@@ -70,8 +70,9 @@ def adam_stochastic_gradient_descent_with_linesearch(
     :param beta2:
     :param epsilon:
     :param stop_patience:
+    :param patience_percentage:
     :param parallel_iterations:
-    :param search_size:
+    :param log_step:
     :return:
     """
 
@@ -122,32 +123,30 @@ def adam_stochastic_gradient_descent_with_linesearch(
         lr_t = tf.math.sqrt(1. - tf.math.pow(beta2, t_float)) * \
                tf.math.reciprocal(tf.math.sqrt(1. - tf.math.pow(beta1, t_float)))
         next_m, next_v = [], []
+        scaled_grads = []
         for (m_t, v_t, g_t) in zip(m, v, adam_grads):
             if g_t is None:
                 next_m.append(m_t)
                 next_v.append(v_t)
+                scaled_grads.append(None)
                 continue
-
             m_t = beta1 * m_t + (1. - beta1) * g_t
             v_t = beta2 * v_t + (1. - beta2) * tf.math.square(g_t)
             next_m.append(m_t)
             next_v.append(v_t)
-
-            # p_t = p_t - lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon)
+            scaled_grads.append(lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
 
         def search_function(a):
-            # TODO: don't need to redo predictive x because nat_params fixed
             test_adam_params = []
-            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, adam_grads):
+            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, scaled_grads):
                 if g_t is None:
                     test_adam_params.append(p_t)
                     continue
-                test_adam_params.append(p_t - a * lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
+                test_adam_params.append(p_t - a * g_t)
             loss = tf.reduce_mean(loss_fn(*test_adam_params))
             return loss - loss0
 
         log_search_space = tf.math.log(lr) + tf.constant([log_step, 0., -log_step], float_type)
-
         search_space = tf.math.exp(log_search_space)
         search_results = tf.map_fn(search_function, search_space, parallel_iterations=3)
 
@@ -155,7 +154,7 @@ def adam_stochastic_gradient_descent_with_linesearch(
         next_lr = search_space[argmin]
         loss_min = search_results[argmin]
 
-        alt_log_search_space = tf.math.log(lr) + tf.constant([3, 2, 1, -1, -2, -3], float_type)
+        alt_log_search_space = tf.math.log(lr) + tf.constant([-1, -2, -3], float_type)
         alt_search_space = tf.math.exp(alt_log_search_space)
         alt_search_results = tf.map_fn(search_function, alt_search_space, parallel_iterations=3)
 
@@ -168,15 +167,16 @@ def adam_stochastic_gradient_descent_with_linesearch(
         loss_min = tf.cond(tf.greater_equal(loss_min, tf.constant(0., float_type)), lambda: alt_loss_min,
                            lambda: loss_min)
 
-        with tf.control_dependencies(
-                [tf.print('Step:', t, 'Optimal', 'Learning rate:', next_lr, 'loss reduction', loss_min,
-                          'from loss:', loss0)]):
-            next_adam_params = []
-            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, adam_grads):
-                if g_t is None:
-                    next_adam_params.append(p_t)
-                    continue
-                next_adam_params.append(p_t - next_lr * lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
+        # with tf.control_dependencies(
+        #         [tf.print('Step:', t, 'Optimal', 'Learning rate:', next_lr, 'loss reduction', loss_min,
+        #                   'from loss:',
+        #                   loss0)]):  # , 'loss_selection', tf.stack([search_space, search_results], axis=1))]):
+        next_adam_params = []
+        for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, scaled_grads):
+            if g_t is None:
+                next_adam_params.append(p_t)
+                continue
+            next_adam_params.append(p_t - next_lr * g_t)
 
         return next_adam_params, next_m, next_v, next_lr
 
@@ -266,6 +266,67 @@ def adam_stochastic_gradient_descent_with_linesearch_batched(
         [n.set_shape(p.shape) for n, p in zip(next_adam_params, adam_params)]
 
         return t + 1, next_adam_params, next_m, next_v, loss_ta, min_loss, patience, next_lr
+
+    def _adam_update(adam_grads, adam_params, nat_params, m, t, v, loss0, lr):
+        t_float = tf.cast(t, float_type) + 1.
+        lr_t = tf.math.sqrt(1. - tf.math.pow(beta2, t_float)) * \
+               tf.math.reciprocal(tf.math.sqrt(1. - tf.math.pow(beta1, t_float)))
+        next_m, next_v = [], []
+        scaled_grads = []
+        for (m_t, v_t, g_t) in zip(m, v, adam_grads):
+            if g_t is None:
+                next_m.append(m_t)
+                next_v.append(v_t)
+                scaled_grads.append(None)
+                continue
+            m_t = beta1 * m_t + (1. - beta1) * g_t
+            v_t = beta2 * v_t + (1. - beta2) * tf.math.square(g_t)
+            next_m.append(m_t)
+            next_v.append(v_t)
+            scaled_grads.append(lr_t * m_t * tf.math.reciprocal(tf.math.sqrt(v_t) + epsilon))
+
+        def search_function(a):
+            test_adam_params = []
+            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, scaled_grads):
+                if g_t is None:
+                    test_adam_params.append(p_t)
+                    continue
+                test_adam_params.append(p_t - a * g_t)
+            loss = tf.reduce_mean(loss_fn(nat_params, test_adam_params))
+            return loss - loss0
+
+        log_search_space = tf.math.log(lr) + tf.constant([log_step, 0., -log_step], float_type)
+        search_space = tf.math.exp(log_search_space)
+        search_results = tf.map_fn(search_function, search_space, parallel_iterations=3)
+
+        argmin = tf.argmin(search_results)
+        next_lr = search_space[argmin]
+        loss_min = search_results[argmin]
+
+        alt_log_search_space = tf.math.log(lr) + tf.constant([1, -1, -2, -3], float_type)
+        alt_search_space = tf.math.exp(alt_log_search_space)
+        alt_search_results = tf.map_fn(search_function, alt_search_space, parallel_iterations=3)
+
+        alt_argmin = tf.argmin(alt_search_results)
+        alt_next_lr = alt_search_space[argmin]
+        alt_loss_min = alt_search_results[argmin]
+
+        next_lr = tf.cond(tf.greater_equal(loss_min, tf.constant(0., float_type)), lambda: alt_next_lr,
+                          lambda: next_lr)
+        loss_min = tf.cond(tf.greater_equal(loss_min, tf.constant(0., float_type)), lambda: alt_loss_min,
+                           lambda: loss_min)
+
+        with tf.control_dependencies(
+                [tf.print('Step:', t, 'Optimal', 'Learning rate:', next_lr, 'loss reduction', loss_min,
+                          'from loss:', loss0)]):#, 'loss_selection', tf.stack([search_space, search_results], axis=1))]):
+            next_adam_params = []
+            for (m_t, v_t, p_t, g_t) in zip(next_m, next_v, adam_params, scaled_grads):
+                if g_t is None:
+                    next_adam_params.append(p_t)
+                    continue
+                next_adam_params.append(p_t - next_lr * g_t)
+
+        return next_adam_params, next_m, next_v, next_lr
 
     def _adam_update(adam_grads, adam_params, m, t, v, loss0, lr):
         t_float = tf.cast(t, float_type) + 1.
