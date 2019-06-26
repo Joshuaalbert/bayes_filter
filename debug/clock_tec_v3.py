@@ -481,28 +481,29 @@ if __name__ == '__main__':
 
     logging.info('Constructing graph')
     with tf.Session(graph=tf.Graph(), config=tf.ConfigProto(allow_soft_placement=True)) as sess:
-        Yreal_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
-        Yimag_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
-        freqs_pl = tf.placeholder(float_type, shape=(Nf,))
-        gain_uncert_pl = tf.placeholder(float_type, shape=(Nd, Na))
-        tec_conv = -8.4479745e6 / freqs_pl
+        with tf.device('/device:CPU:0'):
+            Yreal_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
+            Yimag_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
+            freqs_pl = tf.placeholder(float_type, shape=(Nf,))
+            gain_uncert_pl = tf.placeholder(float_type, shape=(Nd, Na))
+            tec_conv = -8.4479745e6 / freqs_pl
 
-        phase_raw = tf.atan2(Yimag_pl, Yreal_pl)
+            phase_raw = tf.atan2(Yimag_pl, Yreal_pl)
 
-        tec_system_solver = TecSystemSolve(freqs_pl, Yimag_pl, Yreal_pl, gain_uncert_pl, S=20, per_ref_parallel_iterations=6)
-        tec_solution, tec_uncert_solution = tec_system_solver.run(lstsq_parallel_iterations=6)
+            tec_system_solver = TecSystemSolve(freqs_pl, Yimag_pl, Yreal_pl, gain_uncert_pl, S=20, per_ref_parallel_iterations=6)
+            tec_solution, tec_uncert_solution = tec_system_solver.run(lstsq_parallel_iterations=6)
 
-        #Npol, Nd, Na, Nf, Nt
-        phase_dd_mean = tec_solution[..., None, :] * tec_conv[:, None]
-        phase_dd_uncert = tec_uncert_solution[..., None, :] * tec_conv[:, None]
-        phase_res = tf_wrap(tf_wrap(phase_raw) - tf_wrap(phase_dd_mean))
+            #Npol, Nd, Na, Nf, Nt
+            phase_dd_mean = tec_solution[..., None, :] * tec_conv[:, None]
+            phase_dd_uncert = tec_uncert_solution[..., None, :] * tec_conv[:, None]
+            phase_res = tf_wrap(tf_wrap(phase_raw) - tf_wrap(phase_dd_mean))
 
-        residual_smoother = ResidualSmooth(freqs_pl, phase_res)
-        #Npol, Nd, Na, Nf, Nt
-        residual_mean, residual_uncert = residual_smoother.run(smoother_parallel_iterations=6)
+            residual_smoother = ResidualSmooth(freqs_pl, phase_res)
+            #Npol, Nd, Na, Nf, Nt
+            residual_mean, residual_uncert = residual_smoother.run(smoother_parallel_iterations=6)
 
-        final_phase_mean = phase_dd_mean + residual_mean
-        final_phase_uncert = tf.math.sqrt(tf.math.square(phase_dd_uncert) + tf.math.square(residual_uncert))
+            final_phase_mean = phase_dd_mean + residual_mean
+            final_phase_uncert = tf.math.sqrt(tf.math.square(phase_dd_uncert) + tf.math.square(residual_uncert))
         logging.info("Calculating...")
         tec_mean, tec_uncert, phase_mean, phase_uncert = sess.run([tec_solution, tec_uncert_solution, final_phase_mean, final_phase_uncert],
                                                                   feed_dict={Yreal_pl:Yreal_full, Yimag_pl: Yimag_full, freqs_pl:freqs, gain_uncert_pl:gain_uncert})
