@@ -594,7 +594,9 @@ def tf_unwrap(phi, axis=0):
     s1[axis] = slice(1,None,1)
     dphi = phi[s1] - phi[s0]
     mod_phi = tf_wrap(dphi) - dphi
-    cor = tf.cumsum(mod_phi, axis=axis, exclusive=True)
+    cor = tf.cumsum(mod_phi, axis=axis, exclusive=False)
+    s0[axis] = slice(0, 1, 1)
+    cor = tf.concat([tf.zeros_like(phi[s0]), cor], axis=axis)
     return phi + cor
 
 if __name__ == '__main__':
