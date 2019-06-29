@@ -335,87 +335,6 @@ class TecSystemSolve(object):
         return tec_solution, tec_uncert_solution
 
 
-# class ResidualSmoothLoss(object):
-#     def __init__(self, phase_res, freqs):
-#         """
-#         This function builds the loss function.
-#         Simple use case:
-#         # loop over data
-#         loss_fn = build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=0.1,S=20)
-#         #brute force
-#         tec_mean, tec_uncert = brute(loss_fn, (slice(-200, 200,1.), slice(np.log(0.01), np.log(10.), 1.), finish=fmin)
-#         #The results are Bayesian estimates of tec mean and uncert.
-#
-#         :param phase_res: np.array shape [Nf]
-#             The phase residual data
-#         :param freqs: np.array shape [Nf]
-#             The freqs in Hz
-#         :return: callable function of the form
-#             func(params) where params is a tuple or list with:
-#                 params[0] is log_phase_noise in radians
-#                 params[1] is log_freq_lengthscales in MHz
-#                 params[2] is log_sigma in radians
-#                 params[3] is mean
-#             The return of the func is a scalar loss to be minimised.
-#         """
-#         self.freqs = freqs/1e7
-#         self.Nf = tf.size(self.freqs)
-#         #scalar
-#         self.emp_mean = tf.reduce_mean(phase_res)
-#         #Nf
-#         self.phase_res = phase_res - self.emp_mean
-#         # Nf, Nf
-#         self.neg_chi = -0.5*tf.math.squared_difference(self.freqs[:, None], self.freqs[None, :])
-#         self.I = tf.linalg.diag(tf.ones((self.Nf,), float_type))
-#
-#
-#     def loss_func(self, params):
-#         # B, 3
-#         exp_params = tf.math.exp(params[:, :3])
-#         # B
-#         phase_noise, sigma, freq_lengthscale = exp_params[:, 0], exp_params[:, 1], exp_params[:, 2]
-#         freq_lengthscale += 1.
-#         mean = params[:, 3]
-#         # B, Nf, Nf
-#         K = tf.math.square(sigma)[:, None, None] * tf.math.exp(self.neg_chi/tf.math.square(freq_lengthscale)[:, None, None])
-#         # B, Nf, Nf
-#         Kf = K + tf.math.square(phase_noise)[:, None, None] * self.I
-#         L = tf.linalg.cholesky(Kf)
-#         #B, Nf
-#         dy = self.phase_res - mean[:, None]
-#         # B, Nf
-#         A = tf.linalg.triangular_solve(L, dy[:, :, None])[:, :, 0]
-#         # B
-#         maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-1)
-#         # B
-#         com = -0.5*np.log(2*np.pi)*tf.cast(self.Nf, float_type) - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)), axis=-1)
-#         marginal_log = maha + com
-#         return tf.math.negative(marginal_log)
-#
-#     def smooth_func(self, params):
-#         #non-vecotrised list of params
-#         # scalars
-#         phase_noise, sigma, freq_lengthscale = [tf.math.exp(p) for p in params[:3]]
-#         freq_lengthscale += 1.
-#         mean = params[3]
-#         with tf.control_dependencies([tf.print('smooth params', phase_noise, sigma, freq_lengthscale, mean)]):
-#             # Nf, Nf
-#             K = tf.math.square(sigma) * tf.math.exp(
-#                 self.neg_chi / tf.math.square(freq_lengthscale))
-#         # Nf, Nf
-#         Kf = K + tf.math.square(phase_noise) * self.I
-#         L = tf.linalg.cholesky(Kf)
-#         # Nf, Nf
-#         A = tf.linalg.triangular_solve(L, K)
-#         # Nf
-#         dy = self.phase_res - mean
-#         #Nf
-#         post_mean = tf.matmul(A, dy[:, None], transpose_a=True)[:, 0] + mean + self.emp_mean
-#         post_var = tf.math.square(sigma) - tf.reduce_sum(tf.math.square(A), axis=0)
-#         #TODO: fix variance!?
-#         return post_mean, tf.math.sqrt(tf.math.abs(post_var))
-
-
 class ResidualSmoothLoss(object):
     def __init__(self, phase_res, freqs):
         """
@@ -441,9 +360,9 @@ class ResidualSmoothLoss(object):
         """
         self.freqs = freqs/1e7
         self.Nf = tf.size(self.freqs)
-        #Nt
-        self.emp_mean = tf.reduce_mean(phase_res, axis=0)
-        #Nf, Nt
+        #scalar
+        self.emp_mean = tf.reduce_mean(phase_res)
+        #Nf
         self.phase_res = phase_res - self.emp_mean
         # Nf, Nf
         self.neg_chi = -0.5*tf.math.squared_difference(self.freqs[:, None], self.freqs[None, :])
@@ -455,102 +374,130 @@ class ResidualSmoothLoss(object):
         exp_params = tf.math.exp(params)
         # B
         phase_noise, sigma, freq_lengthscale = exp_params[:, 0], exp_params[:, 1], exp_params[:, 2]
-        # freq_lengthscale += 0.5
+        freq_lengthscale += 0.5
         # B, Nf, Nf
         K = tf.math.square(sigma)[:, None, None] * tf.math.exp(self.neg_chi/tf.math.square(freq_lengthscale)[:, None, None])
         # B, Nf, Nf
         Kf = K + tf.math.square(phase_noise)[:, None, None] * self.I
         L = tf.linalg.cholesky(Kf)
-        #B, Nf, Nt
-        dy = tf.tile(self.phase_res[None, :, :], (tf.size(phase_noise), 1, 1))
-        # B, Nf, Nt
-        A = tf.linalg.triangular_solve(L, dy)
-        # B, Nt
-        maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-2)
+        #B, Nf
+        dy = tf.tile(self.phase_res[None, :], (tf.size(phase_noise), 1))
+        # B, Nf
+        A = tf.linalg.triangular_solve(L, dy[:, :, None])[:, :, 0]
+        # B
+        maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-1)
         # B
         com = -0.5*np.log(2*np.pi)*tf.cast(self.Nf, float_type) - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)), axis=-1)
-        # B
-        marginal_log = tf.reduce_sum(maha + com[:, None], axis=1)# + tfp.distributions.Normal(loc=tf.constant(1.5, float_type), scale=tf.constant(0.5, float_type)).log_prob(freq_lengthscale) + tfp.distributions.Normal(loc=tf.constant(0.075, float_type), scale=tf.constant(0.025, float_type)).log_prob(phase_noise)
+        marginal_log = maha + com + tfp.distributions.Normal(scale=tf.constant(0.1, float_type)).log_prob(
+            phase_noise) + tfp.distributions.Normal(scale=tf.constant(2.5, float_type)).log_prob(freq_lengthscale)
         return tf.math.negative(marginal_log)
 
     def smooth_func(self, params):
         #non-vecotrised list of params
         # scalars
         phase_noise, sigma, freq_lengthscale = [tf.math.exp(p) for p in params]
-        # phase_noise = tf.constant(0.07, float_type)
-        # phase_noise = tf.constant(0.75, float_type) * tf.math.sqrt(tf.reduce_mean(tf.math.square(self.phase_res)))
-        # sigma=tf.constant(0.1, float_type)
-        # freq_lengthscale += 0.5
-        with tf.control_dependencies([tf.print('smooth params', phase_noise, sigma, freq_lengthscale)]):
-            # Nf, Nf
-            K = tf.math.square(sigma) * tf.math.exp(
-                self.neg_chi / tf.math.square(freq_lengthscale))
+        freq_lengthscale += 0.5
+        # with tf.control_dependencies([tf.print('smooth params', phase_noise, sigma, freq_lengthscale)]):
+        # Nf, Nf
+        K = tf.math.square(sigma) * tf.math.exp(
+            self.neg_chi / tf.math.square(freq_lengthscale))
         # Nf, Nf
         Kf = K + tf.math.square(phase_noise) * self.I
         L = tf.linalg.cholesky(Kf)
         # Nf, Nf
         A = tf.linalg.triangular_solve(L, K)
-        # Nf, Nt
+        # Nf
         dy = self.phase_res
-        #Nf, Nt
-        post_mean = tf.matmul(A, dy, transpose_a=True) + self.emp_mean
-        post_var = tf.math.square(sigma) - tf.linalg.diag_part(tf.matmul(A, A, transpose_b=True))
-        post_var = tf.tile(post_var[:, None], (1, tf.shape(dy)[1]))
+        #Nf
+        post_mean = tf.matmul(A, dy[:, None], transpose_a=True)[:, 0] + self.emp_mean
+        post_var = tf.math.square(sigma) - tf.reduce_sum(tf.math.square(A), axis=0)
         #TODO: fix variance!?
         return post_mean, tf.math.sqrt(tf.math.abs(post_var))
 
 
-# class ResidualSmooth(object):
-#     def __init__(self, freqs, phase_res):
-#         self.phase_res = phase_res
-#         self.freqs = freqs
+# class ResidualSmoothLoss(object):
+#     def __init__(self, phase_res, freqs):
+#         """
+#         This function builds the loss function.
+#         Simple use case:
+#         # loop over data
+#         loss_fn = build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=0.1,S=20)
+#         #brute force
+#         tec_mean, tec_uncert = brute(loss_fn, (slice(-200, 200,1.), slice(np.log(0.01), np.log(10.), 1.), finish=fmin)
+#         #The results are Bayesian estimates of tec mean and uncert.
 #
-#     def solve_all_time(self, args):
-#         dir, ant = args
+#         :param phase_res: np.array shape [Nf]
+#             The phase residual data
+#         :param freqs: np.array shape [Nf]
+#             The freqs in Hz
+#         :return: callable function of the form
+#             func(params) where params is a tuple or list with:
+#                 params[0] is log_phase_noise in radians
+#                 params[1] is log_freq_lengthscales in MHz
+#                 params[2] is log_sigma in radians
+#                 params[3] is mean
+#             The return of the func is a scalar loss to be minimised.
+#         """
+#         self.freqs = freqs/1e7
+#         self.Nf = tf.size(self.freqs)
+#         #Nt
+#         self.emp_mean = tf.reduce_mean(phase_res, axis=0)
+#         #Nf, Nt
+#         self.phase_res = phase_res - self.emp_mean
+#         # Nf, Nf
+#         self.neg_chi = -0.5*tf.math.squared_difference(self.freqs[:, None], self.freqs[None, :])
+#         self.I = tf.linalg.diag(tf.ones((self.Nf,), float_type))
 #
-#         ###
-#         # all time learn and smooth
 #
-#         smooth_residual_mean_ta = tf.TensorArray(float_type, size=tf.shape(self.phase_res)[-1])
-#         smooth_residual_uncert_ta = tf.TensorArray(float_type, size=tf.shape(self.phase_res)[-1])
+#     def loss_func(self, params):
+#         # B, 3
+#         exp_params = tf.math.exp(params)
+#         # B
+#         phase_noise, sigma, freq_lengthscale = exp_params[:, 0], exp_params[:, 1], exp_params[:, 2]
+#         # freq_lengthscale += 0.5
+#         # B, Nf, Nf
+#         K = tf.math.square(sigma)[:, None, None] * tf.math.exp(self.neg_chi/tf.math.square(freq_lengthscale)[:, None, None])
+#         # B, Nf, Nf
+#         Kf = K + tf.math.square(phase_noise)[:, None, None] * self.I
+#         L = tf.linalg.cholesky(Kf)
+#         #B, Nf, Nt
+#         dy = tf.tile(self.phase_res[None, :, :], (tf.size(phase_noise), 1, 1))
+#         # B, Nf, Nt
+#         A = tf.linalg.triangular_solve(L, dy)
+#         # B, Nt
+#         maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-2)
+#         # B
+#         com = -0.5*np.log(2*np.pi)*tf.cast(self.Nf, float_type) - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)), axis=-1)
+#         # B
+#         marginal_log = tf.reduce_sum(maha + com[:, None], axis=1)# + tfp.distributions.Normal(loc=tf.constant(1.5, float_type), scale=tf.constant(0.5, float_type)).log_prob(freq_lengthscale) + tfp.distributions.Normal(loc=tf.constant(0.075, float_type), scale=tf.constant(0.025, float_type)).log_prob(phase_noise)
+#         return tf.math.negative(marginal_log)
 #
-#         def body(time, smooth_residual_mean_ta, smooth_residual_uncert_ta):
-#             loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, time], self.freqs)
-#             #noise, sigma, lengthscale, mean
-#             # brute_solver = help_brute_adam([2., 2., 2., 0.1], [0.2, 0.1, 0.2, 0.01], vectorized=True)
-#             # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
-#             brute_solver = helper_brute_recursion(3, [3., 3., 3., 0.05], shrinkage=1/5., vectorized=True)
-#             params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.2), np.log(5.), 0.])
-#             smoothed_phase_mean, smoothed_phase_uncert = loss.smooth_func(params)
-#
-#             return [time + 1, smooth_residual_mean_ta.write(time, smoothed_phase_mean),
-#                     smooth_residual_uncert_ta.write(time, smoothed_phase_uncert)]
-#
-#         def cond(time, *args):
-#             return time < tf.shape(self.phase_res)[-1]
-#
-#         _, smooth_residual_mean_ta, smooth_residual_uncert_ta = tf.while_loop(cond,
-#                                                             body,
-#                                                             [tf.constant(0),
-#                                                              smooth_residual_mean_ta,
-#                                                              smooth_residual_uncert_ta],
-#                                                             back_prop=False)
-#
-#         smooth_residual_mean = smooth_residual_mean_ta.stack()
-#         smooth_residual_uncert = smooth_residual_uncert_ta.stack()
-#         return [smooth_residual_mean, smooth_residual_uncert]
-#
-#     def run(self, smoother_parallel_iterations=10):
-#         shape = tf.shape(self.phase_res)
-#         Npol, Nd, Na, Nf, Nt = shape[0], shape[1], shape[2], shape[3], shape[4]
-#         grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
-#         with tf.control_dependencies([tf.print('Smoothing residual phases')]):
-#             # Nd*Na, Nf, Nt
-#             residual_mean, residual_uncert = tf.map_fn(self.solve_all_time, grid, parallel_iterations=smoother_parallel_iterations,
-#                                              back_prop=False, dtype=[float_type, float_type])
-#         residual_mean = tf.reshape(residual_mean, (Npol, Nd, Na, Nf, Nt))
-#         residual_uncert = tf.reshape(residual_uncert, (Npol, Nd, Na, Nf, Nt))
-#         return residual_mean, residual_uncert
+#     def smooth_func(self, params):
+#         #non-vecotrised list of params
+#         # scalars
+#         phase_noise, sigma, freq_lengthscale = [tf.math.exp(p) for p in params]
+#         # phase_noise = tf.constant(0.07, float_type)
+#         # phase_noise = tf.constant(0.75, float_type) * tf.math.sqrt(tf.reduce_mean(tf.math.square(self.phase_res)))
+#         # sigma=tf.constant(0.1, float_type)
+#         # freq_lengthscale += 0.5
+#         with tf.control_dependencies([tf.print('smooth params', phase_noise, sigma, freq_lengthscale)]):
+#             # Nf, Nf
+#             K = tf.math.square(sigma) * tf.math.exp(
+#                 self.neg_chi / tf.math.square(freq_lengthscale))
+#         # Nf, Nf
+#         Kf = K + tf.math.square(phase_noise) * self.I
+#         L = tf.linalg.cholesky(Kf)
+#         # Nf, Nf
+#         A = tf.linalg.triangular_solve(L, K)
+#         # Nf, Nt
+#         dy = self.phase_res
+#         #Nf, Nt
+#         post_mean = tf.matmul(A, dy, transpose_a=True) + self.emp_mean
+#         post_var = tf.math.square(sigma) - tf.linalg.diag_part(tf.matmul(A, A, transpose_b=True))
+#         post_var = tf.tile(post_var[:, None], (1, tf.shape(dy)[1]))
+#         #TODO: fix variance!?
+#         return post_mean, tf.math.sqrt(tf.math.abs(post_var))
+
 
 class ResidualSmooth(object):
     def __init__(self, freqs, phase_res):
@@ -560,14 +507,36 @@ class ResidualSmooth(object):
     def solve_all_time(self, args):
         dir, ant = args
 
-        loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, :], self.freqs)
-        # noise, sigma, lengthscale, mean
-        # brute_solver = help_brute_adam([2., 2., 2., 0.1], [0.2, 0.1, 0.2, 0.01], vectorized=True)
-        # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
-        brute_solver = helper_brute_recursion(3, [2., 2., 2.], shrinkage=1 / 15., vectorized=True)
-        params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.1), np.log(1.)])
-        smooth_residual_mean, smooth_residual_uncert = loss.smooth_func(params)
+        ###
+        # all time learn and smooth
 
+        smooth_residual_mean_ta = tf.TensorArray(float_type, size=tf.shape(self.phase_res)[-1])
+        smooth_residual_uncert_ta = tf.TensorArray(float_type, size=tf.shape(self.phase_res)[-1])
+
+        def body(time, smooth_residual_mean_ta, smooth_residual_uncert_ta):
+            loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, time], self.freqs)
+            #noise, sigma, lengthscale, mean
+            # brute_solver = help_brute_adam([2., 2., 2., 0.1], [0.2, 0.1, 0.2, 0.01], vectorized=True)
+            # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
+            brute_solver = helper_brute_recursion(3, [3., 3., 3.], shrinkage=1/15., vectorized=True)
+            params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.2), np.log(1.)])
+            smoothed_phase_mean, smoothed_phase_uncert = loss.smooth_func(params)
+
+            return [time + 1, smooth_residual_mean_ta.write(time, smoothed_phase_mean),
+                    smooth_residual_uncert_ta.write(time, smoothed_phase_uncert)]
+
+        def cond(time, *args):
+            return time < tf.shape(self.phase_res)[-1]
+
+        _, smooth_residual_mean_ta, smooth_residual_uncert_ta = tf.while_loop(cond,
+                                                            body,
+                                                            [tf.constant(0),
+                                                             smooth_residual_mean_ta,
+                                                             smooth_residual_uncert_ta],
+                                                            back_prop=False)
+
+        smooth_residual_mean = smooth_residual_mean_ta.stack()
+        smooth_residual_uncert = smooth_residual_uncert_ta.stack()
         return [smooth_residual_mean, smooth_residual_uncert]
 
     def run(self, smoother_parallel_iterations=10):
@@ -576,12 +545,42 @@ class ResidualSmooth(object):
         grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
         with tf.control_dependencies([tf.print('Smoothing residual phases')]):
             # Nd*Na, Nf, Nt
-            residual_mean, residual_uncert = tf.map_fn(self.solve_all_time, grid,
-                                                       parallel_iterations=smoother_parallel_iterations,
-                                                       back_prop=False, dtype=[float_type, float_type])
+            residual_mean, residual_uncert = tf.map_fn(self.solve_all_time, grid, parallel_iterations=smoother_parallel_iterations,
+                                             back_prop=False, dtype=[float_type, float_type])
         residual_mean = tf.reshape(residual_mean, (Npol, Nd, Na, Nf, Nt))
         residual_uncert = tf.reshape(residual_uncert, (Npol, Nd, Na, Nf, Nt))
         return residual_mean, residual_uncert
+
+# class ResidualSmooth(object):
+#     def __init__(self, freqs, phase_res):
+#         self.phase_res = phase_res
+#         self.freqs = freqs
+#
+#     def solve_all_time(self, args):
+#         dir, ant = args
+#
+#         loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, :], self.freqs)
+#         # noise, sigma, lengthscale, mean
+#         # brute_solver = help_brute_adam([2., 2., 2., 0.1], [0.2, 0.1, 0.2, 0.01], vectorized=True)
+#         # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
+#         brute_solver = helper_brute_recursion(3, [2., 2., 2.], shrinkage=1 / 15., vectorized=True)
+#         params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.1), np.log(1.)])
+#         smooth_residual_mean, smooth_residual_uncert = loss.smooth_func(params)
+#
+#         return [smooth_residual_mean, smooth_residual_uncert]
+#
+#     def run(self, smoother_parallel_iterations=10):
+#         shape = tf.shape(self.phase_res)
+#         Npol, Nd, Na, Nf, Nt = shape[0], shape[1], shape[2], shape[3], shape[4]
+#         grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
+#         with tf.control_dependencies([tf.print('Smoothing residual phases')]):
+#             # Nd*Na, Nf, Nt
+#             residual_mean, residual_uncert = tf.map_fn(self.solve_all_time, grid,
+#                                                        parallel_iterations=smoother_parallel_iterations,
+#                                                        back_prop=False, dtype=[float_type, float_type])
+#         residual_mean = tf.reshape(residual_mean, (Npol, Nd, Na, Nf, Nt))
+#         residual_uncert = tf.reshape(residual_uncert, (Npol, Nd, Na, Nf, Nt))
+#         return residual_mean, residual_uncert
 
 def tf_wrap(phi):
     return tf.atan2(tf.math.sin(phi), tf.math.cos(phi))
@@ -601,7 +600,7 @@ def tf_unwrap(phi, axis=0):
 
 if __name__ == '__main__':
 
-    input_datapack = '/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v5.h5'
+    input_datapack = '/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v6.h5'
     datapack = DataPack(input_datapack)
     screen_directions = get_screen_directions('/home/albert/ftp/image.pybdsm.srl.fits', max_N=None)
     maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', screen_directions=screen_directions,
@@ -621,9 +620,9 @@ if __name__ == '__main__':
         if num_ref_dirs < 2:
             raise ValueError("Number of reference directions must be >= 2. Got {}.".format(num_ref_dirs))
 
-    select = dict(dir=slice(0, None, 1),
-                  ant=slice(61, 62, 1),
-                  time=slice(160, 162, 1),
+    select = dict(dir=slice(None, None, 1),
+                  ant=slice(None, None, 1),
+                  time=slice(None, None, 1),
                   freq=slice(None, None, 1),
                   pol=slice(0, 1, 1))
 
@@ -691,11 +690,11 @@ if __name__ == '__main__':
     import pylab as plt
     for d in range(phase_res.shape[1]):
         plt.close('all')
-        plt.imshow(eff_tec[0,d,0,:,:],cmap='coolwarm', vmin=-1., vmax=1.)
+        plt.imshow(eff_tec[0,d,-1,:,:],cmap='coolwarm', vmin=-1., vmax=1.)
         plt.savefig('/home/albert/ftp/eff_tec_plots/ref_dirs_{:02d}_dir_{}.png'.format(num_ref_dirs, d))
         plt.close('all')
-        plt.plot(phase_res[0,d, 0, :, 0])
-        plt.plot(residual_mean[0, d, 0, :, 0])
+        plt.plot(phase_res[0,d, -1, :, 0])
+        plt.plot(residual_mean[0, d, -1, :, 0])
         plt.savefig('/home/albert/ftp/eff_tec_plots/phase_res_{:02d}_dir_{}.png'.format(num_ref_dirs, d))
 
     logging.info("Storing results")
