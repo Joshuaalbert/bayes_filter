@@ -64,7 +64,7 @@ def helper_brute_recursion(levels, init_radius, shrinkage=0.1, vectorized=True):
         shrinkage = [shrinkage for _ in init_radius]
 
     for l in range(1,levels+1, 1)[::-1]:
-        solve_fn = build_brute_finish([tf.convert_to_tensor(r*s**(l-1), float_type) for r,s in zip(init_radius, shrinkage)],
+        solve_fn = build_brute_finish([tf.convert_to_tensor(2.*r*s**(l-1), float_type) for r,s in zip(init_radius, shrinkage)],
                                       [tf.convert_to_tensor(2.*r*s**l, float_type) for r,s in zip(init_radius, shrinkage)],
                                       finish=finishers[-1],
                                       vectorized=vectorized)
@@ -358,10 +358,18 @@ class ResidualSmoothLoss(object):
                 params[3] is mean
             The return of the func is a scalar loss to be minimised.
         """
-        self.freqs = freqs/1e7
+        self.freqs = freqs/10e6
         self.Nf = tf.size(self.freqs)
-        #scalar
-        self.emp_mean = tf.reduce_mean(phase_res)
+        ###
+        # lstsq mean
+        #Nf, 2
+        lhs = tf.stack([self.freqs, tf.ones_like(self.freqs)], axis=1)
+        #2, 1
+        coeffs = tf.linalg.lstsq(lhs, phase_res[:, None], fast=False)
+        #Nf
+        self.emp_mean = tf.matmul(lhs, coeffs)[:, 0]
+        #Nf
+        # self.emp_mean = tf.reduce_mean(phase_res)
         #Nf
         self.phase_res = phase_res - self.emp_mean
         # Nf, Nf
@@ -374,7 +382,7 @@ class ResidualSmoothLoss(object):
         exp_params = tf.math.exp(params)
         # B
         phase_noise, sigma, freq_lengthscale = exp_params[:, 0], exp_params[:, 1], exp_params[:, 2]
-        freq_lengthscale += 0.5
+        freq_lengthscale += 0.13
         # B, Nf, Nf
         K = tf.math.square(sigma)[:, None, None] * tf.math.exp(self.neg_chi/tf.math.square(freq_lengthscale)[:, None, None])
         # B, Nf, Nf
@@ -388,7 +396,7 @@ class ResidualSmoothLoss(object):
         maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-1)
         # B
         com = -0.5*np.log(2*np.pi)*tf.cast(self.Nf, float_type) - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)), axis=-1)
-        marginal_log = maha + com + tfp.distributions.Normal(loc=tf.constant(0., float_type),scale=tf.constant(0.1, float_type)).log_prob(
+        marginal_log = maha + com + tfp.distributions.Normal(loc=tf.constant(0., float_type), scale=tf.constant(0.1, float_type)).log_prob(
             phase_noise) + tfp.distributions.Normal(loc=tf.constant(0., float_type), scale=tf.constant(2.5, float_type)).log_prob(freq_lengthscale)
         return tf.math.negative(marginal_log)
 
@@ -396,7 +404,7 @@ class ResidualSmoothLoss(object):
         #non-vecotrised list of params
         # scalars
         phase_noise, sigma, freq_lengthscale = [tf.math.exp(p) for p in params]
-        freq_lengthscale += 0.5
+        freq_lengthscale += 0.13
         # with tf.control_dependencies([tf.print('smooth params', phase_noise, sigma, freq_lengthscale)]):
         # Nf, Nf
         K = tf.math.square(sigma) * tf.math.exp(
@@ -515,11 +523,11 @@ class ResidualSmooth(object):
 
         def body(time, smooth_residual_mean_ta, smooth_residual_uncert_ta):
             loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, time], self.freqs)
-            #noise, sigma, lengthscale, mean
+            #noise, sigma, lengthscale
             # brute_solver = help_brute_adam([2., 2., 2., 0.1], [0.2, 0.1, 0.2, 0.01], vectorized=True)
             # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
-            brute_solver = helper_brute_recursion(3, [3., 3., 3.], shrinkage=1/15., vectorized=True)
-            params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.2), np.log(1.)])
+            brute_solver = helper_brute_recursion(2, [1., 1., 1.], shrinkage=1/15., vectorized=True)
+            params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.1), np.log(1.)])
             smoothed_phase_mean, smoothed_phase_uncert = loss.smooth_func(params)
 
             return [time + 1, smooth_residual_mean_ta.write(time, smoothed_phase_mean),
