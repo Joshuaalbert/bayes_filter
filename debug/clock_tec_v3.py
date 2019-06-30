@@ -388,8 +388,8 @@ class ResidualSmoothLoss(object):
         maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-1)
         # B
         com = -0.5*np.log(2*np.pi)*tf.cast(self.Nf, float_type) - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)), axis=-1)
-        marginal_log = maha + com + tfp.distributions.Normal(scale=tf.constant(0.1, float_type)).log_prob(
-            phase_noise) + tfp.distributions.Normal(scale=tf.constant(2.5, float_type)).log_prob(freq_lengthscale)
+        marginal_log = maha + com + tfp.distributions.Normal(loc=tf.constant(0., float_type),scale=tf.constant(0.1, float_type)).log_prob(
+            phase_noise) + tfp.distributions.Normal(loc=tf.constant(0., float_type), scale=tf.constant(2.5, float_type)).log_prob(freq_lengthscale)
         return tf.math.negative(marginal_log)
 
     def smooth_func(self, params):
