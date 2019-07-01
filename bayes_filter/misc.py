@@ -20,7 +20,17 @@ from .coord_transforms import itrs_to_enu_with_references,tf_coord_transform
 from .kernels import DTECIsotropicTimeGeneral
 from .settings import angle_type, dist_type
 from scipy.special import erfinv
+import datetime
 
+def tf_datetime():
+    return tf.py_function(lambda: str(datetime.datetime.now()), [],[tf.string])[0]
+
+def lock_print(lock, *message):
+    if not isinstance(lock, list):
+        lock = [lock]
+    with tf.control_dependencies(lock):
+        with tf.control_dependencies([tf.print(tf_datetime(), ":",*message)]):
+            return tf.no_op()
 
 def laplace_gaussian_marginalisation(L, y, order = 10):
     """

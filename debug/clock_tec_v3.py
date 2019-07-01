@@ -7,7 +7,7 @@ import numpy as np
 from bayes_filter.datapack import DataPack
 from bayes_filter.sgd import adam_stochastic_gradient_descent_with_linesearch
 from bayes_filter import logging, float_type
-from bayes_filter.misc import maybe_create_posterior_solsets, get_screen_directions, safe_cholesky
+from bayes_filter.misc import maybe_create_posterior_solsets, get_screen_directions, safe_cholesky, lock_print
 import pylab as plt
 from bayes_filter import float_type, logging
 from scipy.optimize import brute, fmin
@@ -57,15 +57,26 @@ def build_brute_finish(radius, steps, finish=None, vectorized=True):
         return tf_brute(fn, ranges, finish=finish, vectorized=vectorized)
     return recursion
 
-def helper_brute_recursion(levels, init_radius, shrinkage=0.1, vectorized=True):
+def helper_brute_recursion(levels, init_radius, shrinkage=10, vectorized=True):
     finishers = [None]
     #radius_0*shrinkage^(t-1), radius_0*shrinkage^t
     if not isinstance(shrinkage, (list,tuple)):
         shrinkage = [shrinkage for _ in init_radius]
 
+    #N = 1/N^l
+    #rad_l = r^l
+    #precision_l = (2*r_l)/N
+    #rad_l+1 = prec_l = (2*r_l)/N = r^l+1
+    #r_1 = r_1
+    #p_1 = (2*r_1)/N
+    #r_2 = (2*r_1)/N
+    #p_2 = (2*(2*r_1)/N)/N
+    # r_3 = (2*(2*r_1)/N)/N = 2^2 r_1 /N^2
+    # p_3 = (2*(2*(2*r_1)/N)/N)/N = 2^3*r_1/N^3
+
     for l in range(1,levels+1, 1)[::-1]:
-        solve_fn = build_brute_finish([tf.convert_to_tensor(2.*r*s**(l-1), float_type) for r,s in zip(init_radius, shrinkage)],
-                                      [tf.convert_to_tensor(2.*r*s**l, float_type) for r,s in zip(init_radius, shrinkage)],
+        solve_fn = build_brute_finish([tf.convert_to_tensor(r*(2./s)**(l-1), float_type) for r,s in zip(init_radius, shrinkage)],
+                                      [tf.convert_to_tensor(r*(2./s)**l, float_type) for r,s in zip(init_radius, shrinkage)],
                                       finish=finishers[-1],
                                       vectorized=vectorized)
         finishers.append(solve_fn)
@@ -118,6 +129,161 @@ def help_brute_newton(radius, steps, num_steps=3, vectorized=True, **kwargs):
     return build_brute_finish(radius, steps, finish=newton, vectorized=vectorized)
 
 
+# class TecSolveLoss(object):
+#     """
+#     This class builds the loss function.
+#     Simple use case:
+#     # loop over data
+#     loss_fn = build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=0.1,S=20)
+#     #brute force
+#     tec_mean, tec_uncert = brute(loss_fn, (slice(-200, 200,1.), slice(np.log(0.01), np.log(10.), 1.), finish=fmin)
+#     #The results are Bayesian estimates of tec mean and uncert.
+#
+#     :param Yreal: np.array shape [Nf]
+#         The real data (including amplitude)
+#     :param Yimag: np.array shape [Nf]
+#         The imag data (including amplitude)
+#     :param freqs: np.array shape [Nf]
+#         The freqs in Hz
+#     :param gain_uncert: float
+#         The uncertainty of gains.
+#     :param tec_mean_prior: float
+#         the prior mean for tec in mTECU
+#     :param tec_uncert_prior: float
+#         the prior tec uncert in mTECU
+#     :param S: int
+#         Number of hermite terms for Guass-Hermite quadrature
+#     :return: callable function of the form
+#         func(params) where params is a tuple or list with:
+#             params[0] is tec_mean in mTECU
+#             params[1] is log_tec_uncert in log[mTECU]
+#         The return of the func is a scalar loss to be minimised.
+#     """
+#     def __init__(self,Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=100.,S=20, log_uncert=True):
+#         x, w = np.polynomial.hermite.hermgauss(S)
+#         w /= np.pi
+#         self.x = tf.convert_to_tensor(x, float_type)
+#         self.w = tf.convert_to_tensor(w, float_type)
+#         self.log_uncert = log_uncert
+#
+#         self.tec_conv = -8.4479745e6/freqs
+#         # Nf
+#         self.amp = tf.math.sqrt(tf.math.square(Yreal) + tf.math.square(Yimag))
+#         self.Yreal = Yreal
+#         self.Yimag = Yimag
+#         # scalar
+#         self.gain_uncert = gain_uncert
+#         self.tec_mean_prior = tec_mean_prior
+#         self.tec_uncert_prior = tec_uncert_prior
+#
+#     def loss_func(self, params):
+#         """
+#         VI loss
+#         :param params: tf.Tensor
+#             shape [B, D]
+#         :return: tf.Tensor
+#             shape [B] The loss
+#         """
+#         # B
+#         tec_mean, log_tec_uncert = params[:, 0], params[:, 1]
+#         if self.log_uncert:
+#             tec_uncert = tf.math.exp(log_tec_uncert)
+#         else:
+#             tec_uncert = log_tec_uncert
+#         # B, S
+#         tec = tec_mean[:, None] + np.sqrt(2.) * tec_uncert[:, None] * self.x
+#         # B, S, Nf
+#         phase = tec[:, :, None] * self.tec_conv
+#         Yreal_m = self.amp * tf.math.cos(phase)
+#         Yimag_m = self.amp * tf.math.sin(phase)
+#         # B, S
+#         log_prob = -tf.reduce_mean(tf.math.abs(self.Yreal - Yreal_m) +
+#                             tf.math.abs(self.Yimag - Yimag_m), axis=-1) / self.gain_uncert - np.log(2.) - tf.math.log(self.gain_uncert)
+#         # B
+#         var_exp = tf.reduce_sum(log_prob * self.w, axis=1)
+#         # Get KL
+#         # B
+#         q_var = tf.math.square(tec_uncert)
+#         tec_var_prior = tf.math.square(self.tec_uncert_prior)
+#         trace = q_var/tec_var_prior
+#         mahalanobis = tf.math.square(tec_mean - self.tec_mean_prior) /tec_var_prior
+#         constant = -1.
+#         logdet_qcov = tf.math.log(tec_var_prior / q_var)
+#         twoKL = mahalanobis + constant + logdet_qcov + trace
+#         tec_prior_KL = 0.5 * twoKL
+#         loss = tf.math.negative(var_exp - tec_prior_KL)
+#         # B
+#         return loss
+#
+# class TecSolve(object):
+#     def __init__(self, freqs, Yimag, Yreal, gain_uncert, S=20, ref_dir=14):
+#         # Nf
+#         self.tec_conv = -8.4479745e6/freqs
+#         self.freqs = freqs
+#         self.ref_dir = ref_dir
+#         # Npol, Nd, Na, Nf, Nt
+#         self.phase = tf.math.atan2(Yimag, Yreal)
+#         self.phase_di = self.phase[:, ref_dir:ref_dir+1, ...]
+#         self.phase_dd = self.phase - self.phase_di
+#         self.amp = tf.math.sqrt(tf.math.square(Yimag) + tf.math.square(Yreal))
+#         self.Yreal_data = self.amp*tf.math.cos(self.phase_dd)
+#         self.Yimag_data = self.amp*tf.math.sin(self.phase_dd)
+#         # Nd, Na
+#         self.gain_uncert = gain_uncert
+#         self.S = S
+#
+#     def solve_all_time(self, args):
+#         dir, ant = args
+#
+#         tec_mean_prior = 0.
+#         tec_uncert_prior = 55.
+#         tec_mean_ta = tf.TensorArray(float_type, size=tf.shape(self.Yimag_data)[-1], element_shape=())
+#         tec_uncert_ta = tf.TensorArray(float_type, size=tf.shape(self.Yimag_data)[-1], element_shape=())
+#         def body(time, tec_mean_prior, tec_uncert_prior, tec_mean_ta, tec_uncert_ta):
+#             loss = TecSolveLoss(self.Yreal_data[0, dir, ant, :, time], self.Yimag_data[0, dir, ant, :, time],
+#                                 self.freqs,
+#                                 gain_uncert=self.gain_uncert[dir, ant], tec_mean_prior=tec_mean_prior,
+#                                 tec_uncert_prior=tec_uncert_prior, S=self.S,
+#                                 log_uncert=True)
+#             # brute_solver = help_brute_adam([200., 2.], [5., 4./10.], vectorized=True, iters=10)
+#             # brute_solver = help_brute_bfgs([200., 2.], [5., 0.2], vectorized=True)
+#             brute_solver = helper_brute_recursion(2, [200., 2.], shrinkage=[80., 5.], vectorized=True)
+#             # brute_solver = help_brute_newton([200., 2.], [5., 0.2], num_steps=3, vectorized=True)
+#             params = brute_solver(loss.loss_func, [0., np.log(1.)])
+#             tec_mean, tec_uncert = params[0], tf.math.exp(params[1])
+#             next_tec_mean_prior = tec_mean
+#             next_tec_uncert_prior = tf.math.sqrt(tf.math.square(tec_uncert) + 50.**2)
+#             return [time + 1, next_tec_mean_prior, next_tec_uncert_prior, tec_mean_ta.write(time, tec_mean), tec_uncert_ta.write(time, tec_uncert)]
+#
+#         def cond(time , *args):
+#             return time < tf.shape(self.Yimag_data)[-1]
+#
+#         _, _, _, tec_mean_ta, tec_uncert_ta = tf.while_loop(cond,
+#                                                             body,
+#                                                             [tf.constant(0),
+#                                                              tf.constant(tec_mean_prior, float_type),
+#                                                              tf.constant(tec_uncert_prior, float_type),
+#                                                              tec_mean_ta,
+#                                                              tec_uncert_ta],
+#                                                             back_prop=False)
+#
+#         tec_mean = tec_mean_ta.stack()
+#         tec_uncert = tec_uncert_ta.stack()
+#         return [tec_mean, tec_uncert]
+#
+#     def run(self, parallel_iterations = 10):
+#         shape = tf.shape(self.Yimag_data)
+#         Npol, Nd, Na, Nf, Nt = shape[0], shape[1], shape[2], shape[3], shape[4]
+#         grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
+#         with tf.control_dependencies([lock_print([self.phase_dd], 'Solving tec with ref dir', self.ref_dir)]):
+#             # Nd*Na, Nt
+#             tec_mean, tec_uncert = tf.map_fn(self.solve_all_time, grid, parallel_iterations=parallel_iterations, back_prop=False, dtype=[float_type, float_type])
+#         tec_mean = tf.reshape(tec_mean, (Npol, Nd, Na, Nt))
+#         tec_uncert = tf.reshape(tec_uncert, (Npol, Nd, Na, Nt))
+#
+#         return tec_mean, tec_uncert
+
+
 class TecSolveLoss(object):
     """
     This class builds the loss function.
@@ -148,14 +314,16 @@ class TecSolveLoss(object):
             params[1] is log_tec_uncert in log[mTECU]
         The return of the func is a scalar loss to be minimised.
     """
-    def __init__(self,Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=100.,S=20, log_uncert=True):
+
+    def __init__(self, Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=100., S=20,
+                 log_uncert=True):
         x, w = np.polynomial.hermite.hermgauss(S)
         w /= np.pi
         self.x = tf.convert_to_tensor(x, float_type)
         self.w = tf.convert_to_tensor(w, float_type)
         self.log_uncert = log_uncert
 
-        self.tec_conv = -8.4479745e6/freqs
+        self.tec_conv = -8.4479745e6 / freqs
         # Nf
         self.amp = tf.math.sqrt(tf.math.square(Yreal) + tf.math.square(Yimag))
         self.Yreal = Yreal
@@ -164,7 +332,7 @@ class TecSolveLoss(object):
         self.gain_uncert = gain_uncert
         self.tec_mean_prior = tec_mean_prior
         self.tec_uncert_prior = tec_uncert_prior
-    
+
     def loss_func(self, params):
         """
         VI loss
@@ -187,15 +355,16 @@ class TecSolveLoss(object):
         Yimag_m = self.amp * tf.math.sin(phase)
         # B, S
         log_prob = -tf.reduce_mean(tf.math.abs(self.Yreal - Yreal_m) +
-                            tf.math.abs(self.Yimag - Yimag_m), axis=-1) / self.gain_uncert - np.log(2.) - tf.math.log(self.gain_uncert)
+                                   tf.math.abs(self.Yimag - Yimag_m), axis=-1) / self.gain_uncert - np.log(
+            2.) - tf.math.log(self.gain_uncert)
         # B
         var_exp = tf.reduce_sum(log_prob * self.w, axis=1)
         # Get KL
         # B
         q_var = tf.math.square(tec_uncert)
         tec_var_prior = tf.math.square(self.tec_uncert_prior)
-        trace = q_var/tec_var_prior
-        mahalanobis = tf.math.square(tec_mean - self.tec_mean_prior) /tec_var_prior
+        trace = q_var / tec_var_prior
+        mahalanobis = tf.math.square(tec_mean - self.tec_mean_prior) / tec_var_prior
         constant = -1.
         logdet_qcov = tf.math.log(tec_var_prior / q_var)
         twoKL = mahalanobis + constant + logdet_qcov + trace
@@ -204,19 +373,20 @@ class TecSolveLoss(object):
         # B
         return loss
 
+
 class TecSolve(object):
     def __init__(self, freqs, Yimag, Yreal, gain_uncert, S=20, ref_dir=14):
         # Nf
-        self.tec_conv = -8.4479745e6/freqs
+        self.tec_conv = -8.4479745e6 / freqs
         self.freqs = freqs
         self.ref_dir = ref_dir
         # Npol, Nd, Na, Nf, Nt
         self.phase = tf.math.atan2(Yimag, Yreal)
-        self.phase_di = self.phase[:, ref_dir:ref_dir+1, ...]
+        self.phase_di = self.phase[:, ref_dir:ref_dir + 1, ...]
         self.phase_dd = self.phase - self.phase_di
         self.amp = tf.math.sqrt(tf.math.square(Yimag) + tf.math.square(Yreal))
-        self.Yreal_data = self.amp*tf.math.cos(self.phase_dd)
-        self.Yimag_data = self.amp*tf.math.sin(self.phase_dd)
+        self.Yreal_data = self.amp * tf.math.cos(self.phase_dd)
+        self.Yimag_data = self.amp * tf.math.sin(self.phase_dd)
         # Nd, Na
         self.gain_uncert = gain_uncert
         self.S = S
@@ -228,6 +398,7 @@ class TecSolve(object):
         tec_uncert_prior = 55.
         tec_mean_ta = tf.TensorArray(float_type, size=tf.shape(self.Yimag_data)[-1], element_shape=())
         tec_uncert_ta = tf.TensorArray(float_type, size=tf.shape(self.Yimag_data)[-1], element_shape=())
+
         def body(time, tec_mean_prior, tec_uncert_prior, tec_mean_ta, tec_uncert_ta):
             loss = TecSolveLoss(self.Yreal_data[0, dir, ant, :, time], self.Yimag_data[0, dir, ant, :, time],
                                 self.freqs,
@@ -236,15 +407,16 @@ class TecSolve(object):
                                 log_uncert=True)
             # brute_solver = help_brute_adam([200., 2.], [5., 4./10.], vectorized=True, iters=10)
             # brute_solver = help_brute_bfgs([200., 2.], [5., 0.2], vectorized=True)
-            brute_solver = helper_brute_recursion(2, [200., 2.], shrinkage=[1/80., 1/5.], vectorized=True)
+            brute_solver = helper_brute_recursion(2, [200., 2.], shrinkage=[80., 5.], vectorized=True)
             # brute_solver = help_brute_newton([200., 2.], [5., 0.2], num_steps=3, vectorized=True)
             params = brute_solver(loss.loss_func, [0., np.log(1.)])
             tec_mean, tec_uncert = params[0], tf.math.exp(params[1])
             next_tec_mean_prior = tec_mean
-            next_tec_uncert_prior = tf.math.sqrt(tf.math.square(tec_uncert) + 50.**2)
-            return [time + 1, next_tec_mean_prior, next_tec_uncert_prior, tec_mean_ta.write(time, tec_mean), tec_uncert_ta.write(time, tec_uncert)]
+            next_tec_uncert_prior = tf.math.sqrt(tf.math.square(tec_uncert) + 50. ** 2)
+            return [time + 1, next_tec_mean_prior, next_tec_uncert_prior, tec_mean_ta.write(time, tec_mean),
+                    tec_uncert_ta.write(time, tec_uncert)]
 
-        def cond(time , *args):
+        def cond(time, *args):
             return time < tf.shape(self.Yimag_data)[-1]
 
         _, _, _, tec_mean_ta, tec_uncert_ta = tf.while_loop(cond,
@@ -260,13 +432,14 @@ class TecSolve(object):
         tec_uncert = tec_uncert_ta.stack()
         return [tec_mean, tec_uncert]
 
-    def run(self, parallel_iterations = 10):
+    def run(self, parallel_iterations=10):
         shape = tf.shape(self.Yimag_data)
         Npol, Nd, Na, Nf, Nt = shape[0], shape[1], shape[2], shape[3], shape[4]
         grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
-        with tf.control_dependencies([tf.print('Solving tec with ref dir', self.ref_dir)]):
+        with tf.control_dependencies([lock_print([self.phase_dd], 'Solving tec with ref dir', self.ref_dir)]):
             # Nd*Na, Nt
-            tec_mean, tec_uncert = tf.map_fn(self.solve_all_time, grid, parallel_iterations=parallel_iterations, back_prop=False, dtype=[float_type, float_type])
+            tec_mean, tec_uncert = tf.map_fn(self.solve_all_time, grid, parallel_iterations=parallel_iterations,
+                                             back_prop=False, dtype=[float_type, float_type])
         tec_mean = tf.reshape(tec_mean, (Npol, Nd, Na, Nt))
         tec_uncert = tf.reshape(tec_uncert, (Npol, Nd, Na, Nt))
 
@@ -327,100 +500,12 @@ class TecSystemSolve(object):
 
 
         grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Na), tf.range(Nt), indexing='ij')]
-        with tf.control_dependencies([tf.print('Solving system of tec')]):
+        with tf.control_dependencies([lock_print([tec_mean, tec_uncert], 'Solving system of tec')]):
             #Na*Nt, Nd
             tec_solution, tec_uncert_solution = tf.map_fn(_solve_system, grid, back_prop=False, parallel_iterations=lstsq_parallel_iterations, dtype=[float_type, float_type])
         tec_solution = tf.reshape(tf.transpose(tec_solution, (1,0)), (Npol, Nd, Na, Nt))
         tec_uncert_solution = tf.reshape(tf.transpose(tec_uncert_solution, (1,0)), (Npol, Nd, Na, Nt))
         return tec_solution, tec_uncert_solution
-
-
-class ResidualSmoothLoss(object):
-    def __init__(self, phase_res, freqs):
-        """
-        This function builds the loss function.
-        Simple use case:
-        # loop over data
-        loss_fn = build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=0.1,S=20)
-        #brute force
-        tec_mean, tec_uncert = brute(loss_fn, (slice(-200, 200,1.), slice(np.log(0.01), np.log(10.), 1.), finish=fmin)
-        #The results are Bayesian estimates of tec mean and uncert.
-
-        :param phase_res: np.array shape [Nf]
-            The phase residual data
-        :param freqs: np.array shape [Nf]
-            The freqs in Hz
-        :return: callable function of the form
-            func(params) where params is a tuple or list with:
-                params[0] is log_phase_noise in radians
-                params[1] is log_freq_lengthscales in MHz
-                params[2] is log_sigma in radians
-                params[3] is mean
-            The return of the func is a scalar loss to be minimised.
-        """
-        self.freqs = freqs/10e6
-        self.Nf = tf.size(self.freqs)
-        ###
-        # lstsq mean
-        #Nf, 2
-        lhs = tf.stack([self.freqs, tf.ones_like(self.freqs)], axis=1)
-        #2, 1
-        coeffs = tf.linalg.lstsq(lhs, phase_res[:, None], fast=False)
-        #Nf
-        self.emp_mean = tf.matmul(lhs, coeffs)[:, 0]
-        #Nf
-        # self.emp_mean = tf.reduce_mean(phase_res)
-        #Nf
-        self.phase_res = phase_res - self.emp_mean
-        # Nf, Nf
-        self.neg_chi = -0.5*tf.math.squared_difference(self.freqs[:, None], self.freqs[None, :])
-        self.I = tf.linalg.diag(tf.ones((self.Nf,), float_type))
-
-
-    def loss_func(self, params):
-        # B, 3
-        exp_params = tf.math.exp(params)
-        # B
-        phase_noise, sigma, freq_lengthscale = exp_params[:, 0], exp_params[:, 1], exp_params[:, 2]
-        freq_lengthscale += 0.13
-        # B, Nf, Nf
-        K = tf.math.square(sigma)[:, None, None] * tf.math.exp(self.neg_chi/tf.math.square(freq_lengthscale)[:, None, None])
-        # B, Nf, Nf
-        Kf = K + tf.math.square(phase_noise)[:, None, None] * self.I
-        L = tf.linalg.cholesky(Kf)
-        #B, Nf
-        dy = tf.tile(self.phase_res[None, :], (tf.size(phase_noise), 1))
-        # B, Nf
-        A = tf.linalg.triangular_solve(L, dy[:, :, None])[:, :, 0]
-        # B
-        maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-1)
-        # B
-        com = -0.5*np.log(2*np.pi)*tf.cast(self.Nf, float_type) - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)), axis=-1)
-        marginal_log = maha + com + tfp.distributions.Normal(loc=tf.constant(0., float_type), scale=tf.constant(0.1, float_type)).log_prob(
-            phase_noise) + tfp.distributions.Normal(loc=tf.constant(0., float_type), scale=tf.constant(2.5, float_type)).log_prob(freq_lengthscale)
-        return tf.math.negative(marginal_log)
-
-    def smooth_func(self, params):
-        #non-vecotrised list of params
-        # scalars
-        phase_noise, sigma, freq_lengthscale = [tf.math.exp(p) for p in params]
-        freq_lengthscale += 0.13
-        # with tf.control_dependencies([tf.print('smooth params', phase_noise, sigma, freq_lengthscale)]):
-        # Nf, Nf
-        K = tf.math.square(sigma) * tf.math.exp(
-            self.neg_chi / tf.math.square(freq_lengthscale))
-        # Nf, Nf
-        Kf = K + tf.math.square(phase_noise) * self.I
-        L = tf.linalg.cholesky(Kf)
-        # Nf, Nf
-        A = tf.linalg.triangular_solve(L, K)
-        # Nf
-        dy = self.phase_res
-        #Nf
-        post_mean = tf.matmul(A, dy[:, None], transpose_a=True)[:, 0] + self.emp_mean
-        post_var = tf.math.square(sigma) - tf.reduce_sum(tf.math.square(A), axis=0)
-        #TODO: fix variance!?
-        return post_mean, tf.math.sqrt(tf.math.abs(post_var))
 
 
 # class ResidualSmoothLoss(object):
@@ -446,11 +531,19 @@ class ResidualSmoothLoss(object):
 #                 params[3] is mean
 #             The return of the func is a scalar loss to be minimised.
 #         """
-#         self.freqs = freqs/1e7
+#         self.freqs = freqs/10e6
 #         self.Nf = tf.size(self.freqs)
-#         #Nt
-#         self.emp_mean = tf.reduce_mean(phase_res, axis=0)
-#         #Nf, Nt
+#         ###
+#         # lstsq mean
+#         #Nf, 2
+#         lhs = tf.stack([self.freqs, tf.ones_like(self.freqs)], axis=1)
+#         #2, 1
+#         coeffs = tf.linalg.lstsq(lhs, phase_res[:, None], fast=False)
+#         #Nf
+#         self.emp_mean = tf.matmul(lhs, coeffs)[:, 0]
+#         #Nf
+#         # self.emp_mean = tf.reduce_mean(phase_res)
+#         #Nf
 #         self.phase_res = phase_res - self.emp_mean
 #         # Nf, Nf
 #         self.neg_chi = -0.5*tf.math.squared_difference(self.freqs[:, None], self.freqs[None, :])
@@ -462,102 +555,140 @@ class ResidualSmoothLoss(object):
 #         exp_params = tf.math.exp(params)
 #         # B
 #         phase_noise, sigma, freq_lengthscale = exp_params[:, 0], exp_params[:, 1], exp_params[:, 2]
-#         # freq_lengthscale += 0.5
+#         freq_lengthscale += 0.13
 #         # B, Nf, Nf
 #         K = tf.math.square(sigma)[:, None, None] * tf.math.exp(self.neg_chi/tf.math.square(freq_lengthscale)[:, None, None])
 #         # B, Nf, Nf
 #         Kf = K + tf.math.square(phase_noise)[:, None, None] * self.I
 #         L = tf.linalg.cholesky(Kf)
-#         #B, Nf, Nt
-#         dy = tf.tile(self.phase_res[None, :, :], (tf.size(phase_noise), 1, 1))
-#         # B, Nf, Nt
-#         A = tf.linalg.triangular_solve(L, dy)
-#         # B, Nt
-#         maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-2)
+#         #B, Nf
+#         dy = tf.tile(self.phase_res[None, :], (tf.size(phase_noise), 1))
+#         # B, Nf
+#         A = tf.linalg.triangular_solve(L, dy[:, :, None])[:, :, 0]
+#         # B
+#         maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-1)
 #         # B
 #         com = -0.5*np.log(2*np.pi)*tf.cast(self.Nf, float_type) - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)), axis=-1)
-#         # B
-#         marginal_log = tf.reduce_sum(maha + com[:, None], axis=1)# + tfp.distributions.Normal(loc=tf.constant(1.5, float_type), scale=tf.constant(0.5, float_type)).log_prob(freq_lengthscale) + tfp.distributions.Normal(loc=tf.constant(0.075, float_type), scale=tf.constant(0.025, float_type)).log_prob(phase_noise)
+#         marginal_log = maha + com + tfp.distributions.Normal(loc=tf.constant(0., float_type), scale=tf.constant(0.1, float_type)).log_prob(
+#             phase_noise) + tfp.distributions.Normal(loc=tf.constant(0., float_type), scale=tf.constant(2.5, float_type)).log_prob(freq_lengthscale)
 #         return tf.math.negative(marginal_log)
 #
 #     def smooth_func(self, params):
 #         #non-vecotrised list of params
 #         # scalars
 #         phase_noise, sigma, freq_lengthscale = [tf.math.exp(p) for p in params]
-#         # phase_noise = tf.constant(0.07, float_type)
-#         # phase_noise = tf.constant(0.75, float_type) * tf.math.sqrt(tf.reduce_mean(tf.math.square(self.phase_res)))
-#         # sigma=tf.constant(0.1, float_type)
-#         # freq_lengthscale += 0.5
-#         with tf.control_dependencies([tf.print('smooth params', phase_noise, sigma, freq_lengthscale)]):
-#             # Nf, Nf
-#             K = tf.math.square(sigma) * tf.math.exp(
-#                 self.neg_chi / tf.math.square(freq_lengthscale))
+#         freq_lengthscale += 0.13
+#         # with tf.control_dependencies([tf.print('smooth params', phase_noise, sigma, freq_lengthscale)]):
+#         # Nf, Nf
+#         K = tf.math.square(sigma) * tf.math.exp(
+#             self.neg_chi / tf.math.square(freq_lengthscale))
 #         # Nf, Nf
 #         Kf = K + tf.math.square(phase_noise) * self.I
 #         L = tf.linalg.cholesky(Kf)
 #         # Nf, Nf
 #         A = tf.linalg.triangular_solve(L, K)
-#         # Nf, Nt
+#         # Nf
 #         dy = self.phase_res
-#         #Nf, Nt
-#         post_mean = tf.matmul(A, dy, transpose_a=True) + self.emp_mean
-#         post_var = tf.math.square(sigma) - tf.linalg.diag_part(tf.matmul(A, A, transpose_b=True))
-#         post_var = tf.tile(post_var[:, None], (1, tf.shape(dy)[1]))
+#         #Nf
+#         post_mean = tf.matmul(A, dy[:, None], transpose_a=True)[:, 0] + self.emp_mean
+#         post_var = tf.math.square(sigma) - tf.reduce_sum(tf.math.square(A), axis=0)
 #         #TODO: fix variance!?
 #         return post_mean, tf.math.sqrt(tf.math.abs(post_var))
 
 
-class ResidualSmooth(object):
-    def __init__(self, freqs, phase_res):
-        self.phase_res = phase_res
-        self.freqs = freqs
+class ResidualSmoothLoss(object):
+    def __init__(self, phase_res, freqs):
+        """
+        This function builds the loss function.
+        Simple use case:
+        # loop over data
+        loss_fn = build_loss(Yreal, Yimag, freqs, gain_uncert=0.02, tec_mean_prior=0., tec_uncert_prior=0.1,S=20)
+        #brute force
+        tec_mean, tec_uncert = brute(loss_fn, (slice(-200, 200,1.), slice(np.log(0.01), np.log(10.), 1.), finish=fmin)
+        #The results are Bayesian estimates of tec mean and uncert.
 
-    def solve_all_time(self, args):
-        dir, ant = args
-
+        :param phase_res: np.array shape [Nf]
+            The phase residual data
+        :param freqs: np.array shape [Nf]
+            The freqs in Hz
+        :return: callable function of the form
+            func(params) where params is a tuple or list with:
+                params[0] is log_phase_noise in radians
+                params[1] is log_freq_lengthscales in MHz
+                params[2] is log_sigma in radians
+                params[3] is mean
+            The return of the func is a scalar loss to be minimised.
+        """
+        self.freqs = freqs/1e7
+        self.Nf = tf.size(self.freqs)
         ###
-        # all time learn and smooth
+        # lstsq mean
+        # Nf, 3
+        lhs = tf.stack([tf.math.square(self.freqs), self.freqs, tf.ones_like(self.freqs)], axis=1)
+        # 3, Nt
+        coeffs = tf.linalg.lstsq(lhs, phase_res, fast=False)
+        # Nf, Nt
+        self.emp_mean = tf.matmul(lhs, coeffs)
 
-        smooth_residual_mean_ta = tf.TensorArray(float_type, size=tf.shape(self.phase_res)[-1])
-        smooth_residual_uncert_ta = tf.TensorArray(float_type, size=tf.shape(self.phase_res)[-1])
+        #Nf, Nt
+        self.phase_res = phase_res - self.emp_mean
+        # Nf, Nf
+        self.neg_chi = -0.5*tf.math.squared_difference(self.freqs[:, None], self.freqs[None, :])
+        self.I = tf.linalg.diag(tf.ones((self.Nf,), float_type))
 
-        def body(time, smooth_residual_mean_ta, smooth_residual_uncert_ta):
-            loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, time], self.freqs)
-            #noise, sigma, lengthscale
-            # brute_solver = help_brute_adam([2., 2., 2., 0.1], [0.2, 0.1, 0.2, 0.01], vectorized=True)
-            # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
-            brute_solver = helper_brute_recursion(2, [1., 1., 1.], shrinkage=1/15., vectorized=True)
-            params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.1), np.log(1.)])
-            smoothed_phase_mean, smoothed_phase_uncert = loss.smooth_func(params)
 
-            return [time + 1, smooth_residual_mean_ta.write(time, smoothed_phase_mean),
-                    smooth_residual_uncert_ta.write(time, smoothed_phase_uncert)]
+    def loss_func(self, params):
+        # B, 3
+        exp_params = tf.math.exp(params)
+        # B
+        phase_noise, sigma, freq_lengthscale = exp_params[:, 0], exp_params[:, 1], exp_params[:, 2]
+        freq_lengthscale += 0.13
+        # B, Nf, Nf
+        K = tf.math.square(sigma)[:, None, None] * tf.math.exp(self.neg_chi/tf.math.square(freq_lengthscale)[:, None, None])
+        # B, Nf, Nf
+        Kf = K + tf.math.square(phase_noise)[:, None, None] * self.I
+        L = tf.linalg.cholesky(Kf)
+        #B, Nf, Nt
+        dy = tf.tile(self.phase_res[None, :, :], (tf.size(phase_noise), 1, 1))
+        # B, Nf, Nt
+        A = tf.linalg.triangular_solve(L, dy)
+        # B, Nt
+        maha = -0.5*tf.reduce_sum(tf.math.square(A), axis=-2)
+        # B
+        com = -0.5*np.log(2*np.pi)*tf.cast(self.Nf, float_type) - tf.reduce_sum(tf.math.log(tf.linalg.diag_part(L)), axis=-1)
+        # B
+        marginal_log = tf.reduce_sum(maha + com[:, None], axis=1) + tfp.distributions.Normal(
+            loc=tf.constant(0., float_type), scale=tf.constant(0.1, float_type)).log_prob(
+            phase_noise) + tfp.distributions.Normal(loc=tf.constant(0., float_type),
+                                                    scale=tf.constant(2.5, float_type)).log_prob(freq_lengthscale)
+        return tf.math.negative(marginal_log)
 
-        def cond(time, *args):
-            return time < tf.shape(self.phase_res)[-1]
+    def smooth_func(self, params):
+        #non-vecotrised list of params
+        # scalars
+        phase_noise, sigma, freq_lengthscale = [tf.math.exp(p) for p in params]
+        # phase_noise = tf.constant(0.07, float_type)
+        # phase_noise = tf.constant(0.75, float_type) * tf.math.sqrt(tf.reduce_mean(tf.math.square(self.phase_res)))
+        # sigma=tf.constant(0.1, float_type)
+        freq_lengthscale += 0.13
 
-        _, smooth_residual_mean_ta, smooth_residual_uncert_ta = tf.while_loop(cond,
-                                                            body,
-                                                            [tf.constant(0),
-                                                             smooth_residual_mean_ta,
-                                                             smooth_residual_uncert_ta],
-                                                            back_prop=False)
+        # Nf, Nf
+        K = tf.math.square(sigma) * tf.math.exp(
+            self.neg_chi / tf.math.square(freq_lengthscale))
+        # Nf, Nf
+        Kf = K + tf.math.square(phase_noise) * self.I
+        L = tf.linalg.cholesky(Kf)
+        # Nf, Nf
+        A = tf.linalg.triangular_solve(L, K)
+        # Nf, Nt
+        dy = self.phase_res
+        #Nf, Nt
+        post_mean = tf.matmul(A, dy, transpose_a=True) + self.emp_mean
+        post_var = tf.math.square(sigma) - tf.linalg.diag_part(tf.matmul(A, A, transpose_b=True))
+        post_var = tf.tile(post_var[:, None], (1, tf.shape(dy)[1]))
+        #TODO: fix variance!?
+        return post_mean, tf.math.sqrt(tf.math.abs(post_var))
 
-        smooth_residual_mean = smooth_residual_mean_ta.stack()
-        smooth_residual_uncert = smooth_residual_uncert_ta.stack()
-        return [smooth_residual_mean, smooth_residual_uncert]
-
-    def run(self, smoother_parallel_iterations=10):
-        shape = tf.shape(self.phase_res)
-        Npol, Nd, Na, Nf, Nt = shape[0], shape[1], shape[2], shape[3], shape[4]
-        grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
-        with tf.control_dependencies([tf.print('Smoothing residual phases')]):
-            # Nd*Na, Nf, Nt
-            residual_mean, residual_uncert = tf.map_fn(self.solve_all_time, grid, parallel_iterations=smoother_parallel_iterations,
-                                             back_prop=False, dtype=[float_type, float_type])
-        residual_mean = tf.reshape(residual_mean, (Npol, Nd, Na, Nf, Nt))
-        residual_uncert = tf.reshape(residual_uncert, (Npol, Nd, Na, Nf, Nt))
-        return residual_mean, residual_uncert
 
 # class ResidualSmooth(object):
 #     def __init__(self, freqs, phase_res):
@@ -567,14 +698,36 @@ class ResidualSmooth(object):
 #     def solve_all_time(self, args):
 #         dir, ant = args
 #
-#         loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, :], self.freqs)
-#         # noise, sigma, lengthscale, mean
-#         # brute_solver = help_brute_adam([2., 2., 2., 0.1], [0.2, 0.1, 0.2, 0.01], vectorized=True)
-#         # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
-#         brute_solver = helper_brute_recursion(3, [2., 2., 2.], shrinkage=1 / 15., vectorized=True)
-#         params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.1), np.log(1.)])
-#         smooth_residual_mean, smooth_residual_uncert = loss.smooth_func(params)
+#         ###
+#         # all time learn and smooth
 #
+#         smooth_residual_mean_ta = tf.TensorArray(float_type, size=tf.shape(self.phase_res)[-1])
+#         smooth_residual_uncert_ta = tf.TensorArray(float_type, size=tf.shape(self.phase_res)[-1])
+#
+#         def body(time, smooth_residual_mean_ta, smooth_residual_uncert_ta):
+#             loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, time], self.freqs)
+#             #noise, sigma, lengthscale
+#             # brute_solver = help_brute_adam([2., 2., 2., 0.1], [0.2, 0.1, 0.2, 0.01], vectorized=True)
+#             # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
+#             brute_solver = helper_brute_recursion(2, [1., 1., 1.], shrinkage=1/15., vectorized=True)
+#             params = brute_solver(loss.loss_func, [np.log(0.1), np.log(0.1), np.log(1.)])
+#             smoothed_phase_mean, smoothed_phase_uncert = loss.smooth_func(params)
+#
+#             return [time + 1, smooth_residual_mean_ta.write(time, smoothed_phase_mean),
+#                     smooth_residual_uncert_ta.write(time, smoothed_phase_uncert)]
+#
+#         def cond(time, *args):
+#             return time < tf.shape(self.phase_res)[-1]
+#
+#         _, smooth_residual_mean_ta, smooth_residual_uncert_ta = tf.while_loop(cond,
+#                                                             body,
+#                                                             [tf.constant(0),
+#                                                              smooth_residual_mean_ta,
+#                                                              smooth_residual_uncert_ta],
+#                                                             back_prop=False)
+#
+#         smooth_residual_mean = smooth_residual_mean_ta.stack()
+#         smooth_residual_uncert = smooth_residual_uncert_ta.stack()
 #         return [smooth_residual_mean, smooth_residual_uncert]
 #
 #     def run(self, smoother_parallel_iterations=10):
@@ -583,12 +736,46 @@ class ResidualSmooth(object):
 #         grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
 #         with tf.control_dependencies([tf.print('Smoothing residual phases')]):
 #             # Nd*Na, Nf, Nt
-#             residual_mean, residual_uncert = tf.map_fn(self.solve_all_time, grid,
-#                                                        parallel_iterations=smoother_parallel_iterations,
-#                                                        back_prop=False, dtype=[float_type, float_type])
+#             residual_mean, residual_uncert = tf.map_fn(self.solve_all_time, grid, parallel_iterations=smoother_parallel_iterations,
+#                                              back_prop=False, dtype=[float_type, float_type])
 #         residual_mean = tf.reshape(residual_mean, (Npol, Nd, Na, Nf, Nt))
 #         residual_uncert = tf.reshape(residual_uncert, (Npol, Nd, Na, Nf, Nt))
 #         return residual_mean, residual_uncert
+
+class ResidualSmooth(object):
+    def __init__(self, freqs, phase_res):
+        self.phase_res = phase_res
+        self.freqs = freqs
+
+    def solve_all_time(self, args):
+        dir, ant = args
+
+        loss = ResidualSmoothLoss(self.phase_res[0, dir, ant, :, :], self.freqs)
+        # noise, sigma, lengthscale
+        # brute_solver = help_brute_adam([2., 2., 2., 0.1], [0.2, 0.1, 0.2, 0.01], vectorized=True)
+        # brute_solver = help_brute_bfgs([2., 2., 2., 0.2], [0.2, 0.2, 0.2, 0.02], vectorized=True)
+        brute_solver = helper_brute_recursion(3, [0.75, 1.5, 1.5], shrinkage=[5., 10., 10.], vectorized=True)
+        params = brute_solver(loss.loss_func, [np.log(0.07), np.log(0.1), np.log(1.)])
+        phase_noise, sigma, freq_lengthscale = [tf.math.exp(p) for p in params]
+        with tf.control_dependencies([lock_print([phase_noise, sigma, freq_lengthscale], "Dir", dir, 'Ant',ant,
+                                                 'Best smooth params', phase_noise,
+                                                 sigma, freq_lengthscale)]):
+            smooth_residual_mean, smooth_residual_uncert = loss.smooth_func(params)
+
+        return [smooth_residual_mean, smooth_residual_uncert]
+
+    def run(self, smoother_parallel_iterations=10):
+        shape = tf.shape(self.phase_res)
+        Npol, Nd, Na, Nf, Nt = shape[0], shape[1], shape[2], shape[3], shape[4]
+        grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
+        with tf.control_dependencies([lock_print([self.phase_res],'Smoothing residual phases')]):
+            # Nd*Na, Nf, Nt
+            residual_mean, residual_uncert = tf.map_fn(self.solve_all_time, grid,
+                                                       parallel_iterations=smoother_parallel_iterations,
+                                                       back_prop=False, dtype=[float_type, float_type])
+        residual_mean = tf.reshape(residual_mean, (Npol, Nd, Na, Nf, Nt))
+        residual_uncert = tf.reshape(residual_uncert, (Npol, Nd, Na, Nf, Nt))
+        return residual_mean, residual_uncert
 
 def tf_wrap(phi):
     return tf.atan2(tf.math.sin(phi), tf.math.cos(phi))
@@ -608,7 +795,7 @@ def tf_unwrap(phi, axis=0):
 
 if __name__ == '__main__':
 
-    input_datapack = '/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v6.h5'
+    input_datapack = '/net/lofar1/data1/albert/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v7.h5'
     datapack = DataPack(input_datapack)
     screen_directions = get_screen_directions('/home/albert/ftp/image.pybdsm.srl.fits', max_N=None)
     maybe_create_posterior_solsets(datapack, 'sol000', posterior_name='posterior', screen_directions=screen_directions,
@@ -618,100 +805,105 @@ if __name__ == '__main__':
     axes = datapack.axes_phase
     _, times = datapack.get_times(axes['time'])
 
+    Nt = len(times)
+    time_block = 10
+
     # if len(sys.argv) != 4:
     #     raise ValueError("{} ant from_time to_time".format(sys.argv[0]))
     #
     # ant = int(sys.argv[1])
     # from_time, to_time = [int(l) for l in sys.argv[1:3]]
-    num_ref_dirs = 2
+    num_ref_dirs = 36
     if num_ref_dirs is not None:
         if num_ref_dirs < 2:
             raise ValueError("Number of reference directions must be >= 2. Got {}.".format(num_ref_dirs))
+    for t in range(0, Nt, time_block):
+        time_slice = slice(t, min(t+time_block, Nt), 1)
+        logging.info("Working on time slice {}".format(time_slice))
+        select = dict(dir=slice(None, None, 1),
+                      ant=slice(None, None, 1),
+                      time=time_slice, #slice(0, 2, 1),
+                      freq=slice(None, None, 1),
+                      pol=slice(0, 1, 1))
 
-    select = dict(dir=slice(None, None, 1),
-                  ant=slice(None, None, 1),
-                  time=slice(None, None, 1),
-                  freq=slice(None, None, 1),
-                  pol=slice(0, 1, 1))
+        datapack_raw = DataPack(input_datapack, readonly=True)
+        datapack_raw.current_solset = 'sol000'
+        # Npol, Nd, Na, Nf, Nt
+        datapack_raw.select(**select)
+        phase_raw, _ = datapack_raw.phase
+        amp_raw, axes = datapack_raw.amplitude
+        timestamps, times = datapack_raw.get_times(axes['time'])
+        _, freqs = datapack_raw.get_freqs(axes['freq'])
 
-    datapack_raw = DataPack(input_datapack, readonly=True)
-    datapack_raw.current_solset = 'sol000'
-    # Npol, Nd, Na, Nf, Nt
-    datapack_raw.select(**select)
-    phase_raw, _ = datapack_raw.phase
-    amp_raw, axes = datapack_raw.amplitude
-    timestamps, times = datapack_raw.get_times(axes['time'])
-    _, freqs = datapack_raw.get_freqs(axes['freq'])
-    
-    Npol, Nd, Na, Nf, Nt = phase_raw.shape
+        Npol, Nd, Na, Nf, Nt = phase_raw.shape
 
-    Yimag_full = amp_raw * np.sin(phase_raw)
-    Yreal_full = amp_raw * np.cos(phase_raw)
-    # Nd,Na
-    gain_uncert = 0.25 * np.mean(np.abs(np.diff(Yimag_full, axis=-1)) + np.abs(np.diff(Yreal_full, axis=-1)), axis=-1).mean(
-            -1).mean(0)
-    ref_dir_selection = np.argsort(np.mean(gain_uncert, axis=1))[:num_ref_dirs]
+        Yimag_full = amp_raw * np.sin(phase_raw)
+        Yreal_full = amp_raw * np.cos(phase_raw)
+        # Nd,Na
+        gain_uncert = 0.25 * np.mean(np.abs(np.diff(Yimag_full, axis=-1)) + np.abs(np.diff(Yreal_full, axis=-1)), axis=-1).mean(
+                -1).mean(0)
+        ref_dir_selection = np.argsort(np.mean(gain_uncert, axis=1))[:num_ref_dirs]
 
-    gain_uncert = np.maximum(gain_uncert, 0.02)
+        gain_uncert = np.maximum(gain_uncert, 0.02)
 
-    # gain_uncert = 0.07*np.ones((Nd,Na))
-
-
-
-    logging.info('Constructing graph')
-    with tf.Session(graph=tf.Graph(), config=tf.ConfigProto(allow_soft_placement=True)) as sess:
-        with tf.device('/device:CPU:0'):
-            Yreal_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
-            Yimag_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
-            freqs_pl = tf.placeholder(float_type, shape=(Nf,))
-            gain_uncert_pl = tf.placeholder(float_type, shape=(Nd, Na))
-            tec_conv = -8.4479745e6 / freqs_pl
-
-            phase_raw_tf = tf.atan2(Yimag_pl, Yreal_pl)
-
-            tec_system_solver = TecSystemSolve(freqs_pl, Yimag_pl, Yreal_pl, gain_uncert_pl, S=20, reference_dirs = ref_dir_selection, per_ref_parallel_iterations=6)
-            tec_solution, tec_uncert_solution = tec_system_solver.run(lstsq_parallel_iterations=6)
-
-            #Npol, Nd, Na, Nf, Nt
-            phase_dd_mean = tec_solution[..., None, :] * tec_conv[:, None]
-            phase_dd_uncert = tec_uncert_solution[..., None, :] * tec_conv[:, None]
-
-            ###
-            # smooth residual gains
+        # gain_uncert = 0.07*np.ones((Nd,Na))
 
 
 
-            phase_res = tf_wrap(tf_wrap(phase_raw_tf) - tf_wrap(phase_dd_mean))
-            phase_res = tf_unwrap(phase_res, axis=-1)
+        logging.info('Constructing graph')
+        with tf.Session(graph=tf.Graph(), config=tf.ConfigProto(allow_soft_placement=True)) as sess:
+            with tf.device('/device:CPU:0'):
+                Yreal_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
+                Yimag_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
+                freqs_pl = tf.placeholder(float_type, shape=(Nf,))
+                gain_uncert_pl = tf.placeholder(float_type, shape=(Nd, Na))
+                tec_conv = -8.4479745e6 / freqs_pl
 
-            residual_smoother = ResidualSmooth(freqs_pl, phase_res)
-            #Npol, Nd, Na, Nf, Nt
-            residual_mean, residual_uncert = residual_smoother.run(smoother_parallel_iterations=6)
+                phase_raw_tf = tf.atan2(Yimag_pl, Yreal_pl)
 
-            final_phase_mean = phase_dd_mean + residual_mean
-            final_phase_res = tf_wrap(tf_wrap(phase_raw_tf) - tf_wrap(final_phase_mean))
-            eff_tec = final_phase_res / tec_conv[:, None]
-            final_phase_uncert = tf.math.sqrt(tf.math.square(phase_dd_uncert) + tf.math.square(residual_uncert))
-        logging.info("Calculating...")
-        tec_mean, tec_uncert, phase_mean, phase_uncert, eff_tec, residual_mean, phase_res = sess.run([tec_solution, tec_uncert_solution, final_phase_mean, final_phase_uncert, eff_tec, residual_mean, phase_res],
-                                                                  feed_dict={Yreal_pl:Yreal_full, Yimag_pl: Yimag_full, freqs_pl:freqs, gain_uncert_pl:gain_uncert})
-    import pylab as plt
-    for d in range(phase_res.shape[1]):
-        plt.close('all')
-        plt.imshow(eff_tec[0,d,-1,:,:],cmap='coolwarm', vmin=-1., vmax=1.)
-        plt.savefig('/home/albert/ftp/eff_tec_plots/ref_dirs_{:02d}_dir_{}.png'.format(num_ref_dirs, d))
-        plt.close('all')
-        plt.plot(phase_res[0,d, -1, :, 0])
-        plt.plot(residual_mean[0, d, -1, :, 0])
-        plt.savefig('/home/albert/ftp/eff_tec_plots/phase_res_{:02d}_dir_{}.png'.format(num_ref_dirs, d))
+                tec_system_solver = TecSystemSolve(freqs_pl, Yimag_pl, Yreal_pl, gain_uncert_pl, S=20, reference_dirs = ref_dir_selection, per_ref_parallel_iterations=6)
+                tec_solution, tec_uncert_solution = tec_system_solver.run(lstsq_parallel_iterations=6)
 
-    logging.info("Storing results")
-    datapack_save = DataPack(input_datapack, readonly=False)
-    datapack_save.current_solset = 'data_posterior'
-    # Npol, Nd, Na, Nf, Nt
-    datapack_save.select(**select)
-    datapack_save.phase = phase_mean
-    datapack_save.weights_phase = phase_uncert
-    datapack_save.tec = tec_mean
-    datapack_save.weights_tec = tec_uncert
-    logging.info("Stored results. Done")
+                #Npol, Nd, Na, Nf, Nt
+                phase_dd_mean = tec_solution[..., None, :] * tec_conv[:, None]
+                phase_dd_uncert = tec_uncert_solution[..., None, :] * tec_conv[:, None]
+
+                ###
+                # smooth residual gains
+
+
+
+                phase_res = tf_wrap(tf_wrap(phase_raw_tf) - tf_wrap(phase_dd_mean))
+                phase_res = tf_unwrap(phase_res, axis=-1)
+
+                residual_smoother = ResidualSmooth(freqs_pl, phase_res)
+                #Npol, Nd, Na, Nf, Nt
+                residual_mean, residual_uncert = residual_smoother.run(smoother_parallel_iterations=6)
+
+                final_phase_mean = phase_dd_mean + residual_mean
+                final_phase_res = tf_wrap(tf_wrap(phase_raw_tf) - tf_wrap(final_phase_mean))
+                eff_tec = final_phase_res / tec_conv[:, None]
+                final_phase_uncert = tf.math.sqrt(tf.math.square(phase_dd_uncert) + tf.math.square(residual_uncert))
+            logging.info("Calculating...")
+            tec_mean, tec_uncert, phase_mean, phase_uncert, eff_tec, residual_mean, phase_res = sess.run([tec_solution, tec_uncert_solution, final_phase_mean, final_phase_uncert, eff_tec, residual_mean, phase_res],
+                                                                      feed_dict={Yreal_pl:Yreal_full, Yimag_pl: Yimag_full, freqs_pl:freqs, gain_uncert_pl:gain_uncert})
+        import pylab as plt
+        for d in range(phase_res.shape[1]):
+            plt.close('all')
+            plt.imshow(eff_tec[0,d,-1,:,:],cmap='coolwarm', vmin=-1., vmax=1.)
+            plt.savefig('/home/albert/ftp/eff_tec_plots/ref_dirs_{:02d}_dir_{:02d}_time_{:03d}.png'.format(num_ref_dirs, d,t))
+            plt.close('all')
+            plt.plot(phase_res[0,d, -1, :, 0])
+            plt.plot(residual_mean[0, d, -1, :, 0])
+            plt.savefig('/home/albert/ftp/eff_tec_plots/phase_res_{:02d}_dir_{:02d}_time_{:03d}.png'.format(num_ref_dirs, d, t))
+
+        logging.info("Storing results")
+        datapack_save = DataPack(input_datapack, readonly=False)
+        datapack_save.current_solset = 'data_posterior'
+        # Npol, Nd, Na, Nf, Nt
+        datapack_save.select(**select)
+        datapack_save.phase = phase_mean
+        datapack_save.weights_phase = phase_uncert
+        datapack_save.tec = tec_mean
+        datapack_save.weights_tec = tec_uncert
+        logging.info("Stored results. Done")

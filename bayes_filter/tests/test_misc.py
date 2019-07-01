@@ -8,7 +8,7 @@ import tensorflow as tf
 from bayes_filter import jitter
 from bayes_filter.misc import (random_sample, flatten_batch_dims, load_array_file, timer, diagonal_jitter,
     log_normal_solve_fwhm,make_example_datapack, maybe_create_posterior_solsets, graph_store_get,graph_store_set,
-                               safe_cholesky, get_screen_directions)
+                               safe_cholesky, get_screen_directions, lock_print)
 
 def test_getset_graph_ops(tf_graph):
     a = tf.constant(0)
@@ -26,6 +26,14 @@ def test_random_sample(tf_session):
         assert tf_session.run(random_sample(t)).shape == (6,5,8)
         assert tf_session.run(random_sample(t,3)).shape == (3, 5, 8)
         assert tf_session.run(random_sample(t, 9)).shape == (6, 5, 8)
+
+def test_lock_print(tf_session):
+    with tf_session.graph.as_default():
+        t = tf.constant(True)
+        with tf.control_dependencies([lock_print(t, "This is a message")]):
+            t = tf.constant(True)
+            assert tf_session.run(t)
+
 
 
 def test_safe_cholesky(tf_session):
