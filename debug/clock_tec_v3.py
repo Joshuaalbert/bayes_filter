@@ -517,19 +517,21 @@ class TecSolve(object):
         def cond(time, *args):
             return time < tf.shape(self.Yimag_data)[-1]
 
-        _, _, _, _, tec_mean_ta, tec_uncert_ta = tf.while_loop(cond,
-                                                            body,
-                                                            [tf.constant(0),
-                                                             tf.constant(tec_mean_prior, float_type),
-                                                             tf.constant(tec_uncert_prior, float_type),
-                                                             tf.constant(tec_temporal_prior, float_type),
-                                                             tec_mean_ta,
-                                                             tec_uncert_ta],
-                                                            back_prop=False)
+        with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
 
-        tec_mean = tec_mean_ta.stack()
-        tec_uncert = tec_uncert_ta.stack()
-        return [tec_mean, tec_uncert]
+            _, _, _, _, tec_mean_ta, tec_uncert_ta = tf.while_loop(cond,
+                                                                body,
+                                                                [tf.constant(0),
+                                                                 tf.constant(tec_mean_prior, float_type),
+                                                                 tf.constant(tec_uncert_prior, float_type),
+                                                                 tf.constant(tec_temporal_prior, float_type),
+                                                                 tec_mean_ta,
+                                                                 tec_uncert_ta],
+                                                                back_prop=False)
+
+            tec_mean = tec_mean_ta.stack()
+            tec_uncert = tec_uncert_ta.stack()
+            return [tec_mean, tec_uncert]
 
     def run(self, parallel_iterations=10):
         shape = tf.shape(self.Yimag_data)
@@ -929,17 +931,17 @@ class ResidualSmooth(object):
         return [smooth_residual_mean, smooth_residual_uncert]
 
     def run(self, smoother_parallel_iterations=10):
-        shape = tf.shape(self.phase_res)
-        Npol, Nd, Na, Nf, Nt = shape[0], shape[1], shape[2], shape[3], shape[4]
-        grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
-        with tf.control_dependencies([lock_print([self.phase_res], 'Smoothing residual phases:', shape)]):
+        with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
+            shape = tf.shape(self.phase_res)
+            Npol, Nd, Na, Nf, Nt = shape[0], shape[1], shape[2], shape[3], shape[4]
+            grid = [tf.reshape(t, (-1,)) for t in tf.meshgrid(tf.range(Nd), tf.range(Na), indexing='ij')]
             # Nd*Na, Nf, Nt
             residual_mean, residual_uncert = tf.map_fn(self.solve_all_time, grid,
                                                        parallel_iterations=smoother_parallel_iterations,
                                                        back_prop=False, dtype=[float_type, float_type])
-        residual_mean = tf.reshape(residual_mean, (Npol, Nd, Na, Nf, Nt))
-        residual_uncert = tf.reshape(residual_uncert, (Npol, Nd, Na, Nf, Nt))
-        return residual_mean, residual_uncert
+            residual_mean = tf.reshape(residual_mean, (Npol, Nd, Na, Nf, Nt))
+            residual_uncert = tf.reshape(residual_uncert, (Npol, Nd, Na, Nf, Nt))
+            return residual_mean, residual_uncert
 
 
 def tf_wrap(phi):
@@ -1023,7 +1025,7 @@ if __name__ == '__main__':
 
             logging.info('Constructing graph')
             with tf.Session(graph=tf.Graph(), config=tf.ConfigProto(allow_soft_placement=True)) as sess:
-                with tf.device('/device:GPU:0' if tf.test.is_gpu_available() else '/device:CPU:0'):
+                with tf.device('/device:CPU:0'):
                     Yreal_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
                     Yimag_pl = tf.placeholder(float_type, shape=(Npol, Nd, Na, Nf, Nt))
                     freqs_pl = tf.placeholder(float_type, shape=(Nf,))
