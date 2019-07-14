@@ -134,14 +134,28 @@ class HGPR(GPModel):
         """
         # M,M + T, M, M -> T, M, M
         K = self.kern.K(self.X)
+        Y_std = tf.math.sqrt(self.Y_var)
         def single_marginal(args):
-            y,y_var = args
-            K_sigma = K + tf.linalg.diag(y_var)
-            L = tf.linalg.cholesky(K)
-            marginal_dist = tfp.distributions.MultivariateNormalTriL(loc=None, scale_tril = L)
-            return marginal_dist.log_prob(y)
+            y,y_std = args
+            M = tf.shape(y_std)[0]
+            K_sigma = K/(y_std[:,None]*y_std[None,:]) + tf.linalg.eye(M, dtype=float_type)
+            L = tf.linalg.cholesky(K_sigma)
+            y /= y_std
+            A = tf.linalg.triangular_solve(L, y[:,None])
+            maha = -0.5*tf.reduce_sum(A,A)
+            # (sigma.L.L^T.sigma^T)^-1 = sigma^-T.L^-T.L^-1 sigma^-1
+            # log(0) + log(infty) -> 0
+            logdetL = tf.reduce_sum(
+                tf.math.log(
+                    tf.where(tf.equal(y_std, tf.constant(np.inf, float_type)),
+                             1.,
+                             tf.linalg.diag_part(L) * y_std)
+                )
+            )
+            constant = 0.5*np.log(np.sqrt(2.*np.pi))*tf.cast(M, float_type)
+            return maha - logdetL - constant
 
-        logpdf =  tf.map_fn(single_marginal, [self.Y, self.Y_var], float_type, parallel_iterations=self.parallel_iterations)
+        logpdf =  tf.map_fn(single_marginal, [self.Y, Y_std], float_type, parallel_iterations=self.parallel_iterations)
 
         return tf.reduce_sum(logpdf)
 
@@ -161,16 +175,20 @@ class HGPR(GPModel):
         Kmn = self.kern.K(self.X, Xnew)
         Knn = self.kern.K(Xnew) if full_cov else self.kern.Kdiag(Xnew)
 
+        Y_std = tf.math.sqrt(self.Y_var)
+
         def single_predict_f(args):
-            y, y_var = args
+            y, y_std = args
+            M = tf.shape(y_std)[0]
             #M,M
-            Kmm_sigma = Kmm + tf.linalg.diag(y_var)
+            Kmm_sigma = Kmm/(y_std[:,None] * y_std[None, :]) + tf.linalg.eye(M, dtype=float_type)
+            # (sigma.L.L^T.sigma^T)^-1 = sigma^-T.L^-T.L^-1 sigma^-1
             #M,M
             L = tf.linalg.cholesky(Kmm_sigma)
             #M,N
-            A = tf.linalg.triangular_solve(L, Kmn)
+            A = tf.linalg.triangular_solve(L, Kmn/y_std[:,None])
             #N
-            post_mean = tf.matmul(A, y[:,None], transpose_a = True)[:, 0]
+            post_mean = tf.matmul(A, y[:,None]/y_std[:,None], transpose_a = True)[:, 0]
             if full_cov:
                 #N,N
                 post_cov = Knn - tf.matmul(A,A, transpose_a=True)
@@ -180,7 +198,7 @@ class HGPR(GPModel):
                 #N + T,N -> T,N
                 post_cov = Knn - tf.reduce_mean(tf.math.square(A), axis=0)
             return [post_mean, post_cov]
-        post_mean, post_cov = tf.map_fn(single_predict_f, [self.Y, self.Y_var], [float_type, float_type], parallel_iterations=self.parallel_iterations)
+        post_mean, post_cov = tf.map_fn(single_predict_f, [self.Y, Y_std], [float_type, float_type], parallel_iterations=self.parallel_iterations)
         return post_mean, post_cov
     
 reinout_datapack = '/home/albert/lofar1_1/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v6.h5'
@@ -285,7 +303,8 @@ with tf.device("/device:CPU:0"):
         outlier_masks = []
 
         #assumes K doesn't change over this time
-        
+
+
         for t in range(0,Nt, block_size):
             start = t
             stop = min(Nt,t+block_size)
@@ -326,7 +345,7 @@ with tf.device("/device:CPU:0"):
                 detection = outliers
                 mask = np.logical_not(detection)
                 logging.info("First round of filtering: {} outliers".format(detection.sum()))
-                Y_var = np.where(detection, 1000.**2, 1.)
+                Y_var = np.where(detection, np.inf, 1.)
 
 
                 ###
@@ -347,7 +366,7 @@ with tf.device("/device:CPU:0"):
             ###
             # Predict
             logging.info("Predicting with {} outliers".format(detection.sum()))
-            Y_var = np.where(detection, 1000.**2, 1.0)
+            Y_var = np.where(detection, np.inf, 1.0)
             model = HGPR(X,Y,Y_var, kern, parallel_iterations=10)
             logging.info("Index {} -> training hyperparams".format(t))
             best_hyperparams = [[np.sqrt(kern.variance.value), kern.lengthscales.value]]
