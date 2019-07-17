@@ -1,4 +1,5 @@
-
+import GPyOpt
+import GPy
 import tensorflow as tf
 import tensorflow_probability as tfp
 import numpy as np
@@ -142,13 +143,13 @@ class HGPR(GPModel):
             L = tf.linalg.cholesky(K_sigma)
             y /= y_std
             A = tf.linalg.triangular_solve(L, y[:,None])
-            maha = -0.5*tf.reduce_sum(A,A)
+            maha = -0.5*tf.reduce_sum(tf.math.square(A))
             # (sigma.L.L^T.sigma^T)^-1 = sigma^-T.L^-T.L^-1 sigma^-1
             # log(0) + log(infty) -> 0
             logdetL = tf.reduce_sum(
                 tf.math.log(
                     tf.where(tf.equal(y_std, tf.constant(np.inf, float_type)),
-                             1.,
+                             tf.ones_like(y_std),
                              tf.linalg.diag_part(L) * y_std)
                 )
             )
@@ -222,7 +223,7 @@ datapack.weights_tec = reinout_flags
 recalculate_weights = False
 ant_cutoff = 0.15
 ref_dir_idx = 14
-block_size = 1
+block_size = 80
 
 datapack = DataPack(reinout_datapack, readonly=True)
 select = dict(pol=slice(0,1,1),
@@ -237,6 +238,8 @@ axes = datapack.axes_tec
 # cutoff dist for antennas
 antenna_labels, antennas = datapack.get_antennas(axes['ant'])
 Xa  = antennas.cartesian.xyz.to(dist_type).value.T
+Xa_screen = Xa
+Na_screen = Xa.shape[0]
 
 ref_ant = Xa[0,:]
 Na = len(antennas)
@@ -291,8 +294,8 @@ with tf.device("/device:CPU:0"):
             kern.a.prior = gp.priors.Gaussian(250.,100.**2)
             kern.b.prior = gp.priors.Gaussian(100.,50.**2)
             kern.variance.prior = gp.priors.Gaussian(5.,2.**2)
-            kern.variance = 2.1**2
-            kern.lengthscales = 9.5
+            kern.variance = 2.3**2
+            kern.lengthscales =8.
             kern.a = 250.
             kern.a.trainable = False
             kern.b = 100.
@@ -315,7 +318,7 @@ with tf.device("/device:CPU:0"):
             X = sess.run(ITRSToENUWithReferences(ref_ant, ref_dir, ref_ant)(X))
             X = X.reshape((-1,13))
 
-            X_screen = make_coord_array(Xt[mid_time:mid_time+1,:], Xd_screen, Xa,flat=False)[0,...]
+            X_screen = make_coord_array(Xt[mid_time:mid_time+1,:], Xd_screen, Xa_screen,flat=False)[0,...]
             X_screen = sess.run(ITRSToENUWithReferences(ref_ant, ref_dir, ref_ant)(X_screen))
             X_screen = X_screen.reshape((-1,13))
         
@@ -371,31 +374,84 @@ with tf.device("/device:CPU:0"):
             logging.info("Index {} -> training hyperparams".format(t))
             best_hyperparams = [[np.sqrt(kern.variance.value), kern.lengthscales.value]]
             best_log_marginal = model.compute_log_likelihood()
-            logging.info("Trying multiple random initialisation...")
-            for _ in range(9):
-                s = np.random.uniform(1.,4.)
-                l = np.random.uniform(2., 10.)
-                kern.lengthscales = l
-                kern.variance = s**2
+            logging.info("Doing bayesian optimisation")
+            space =[{'name': 'sigma', 'type': 'continuous', 'domain': (0.5,8.)},
+                    {'name': 'lengthscale', 'type': 'continuous', 'domain': (2.,30.)}]
+                    
+#                    {'name': 'wild','type':'discrete', 'domain':(0,1)}]
+            feasible_region = GPyOpt.Design_space(space = space)
+            initial_design = GPyOpt.experiment_design.initial_design('random', feasible_region, 20)
+            initial_design = np.array([[np.sqrt(kern.variance.value), kern.lengthscales.value]] + list(initial_design))
+            def opt_func(args):
+                sigma, lengthscale = args[0,0], args[0,1]
+                kern.lengthscales = lengthscale# if wild == 0 else lengthscale*10.
+                kern.variance = sigma**2
                 lml = model.compute_log_likelihood()
-                if lml > best_log_marginal:
-                    best_hyperparams.append([s,l])
-                    best_log_marginal = lml
-                    logging.info("Found good combo ({}): amp {} lengthscale {}".format(lml, s,l))
-            kern.lengthscales = best_hyperparams[-1][1]
-            kern.variance = best_hyperparams[-1][0]**2
-            gp.train.ScipyOptimizer().minimize(model)
+                return -lml
+
+
+            # --- CHOOSE the objective
+            objective = GPyOpt.core.task.SingleObjective(opt_func)
+
+            # --- CHOOSE the model type
+            bo_model = GPyOpt.models.GPModel(exact_feval=True,optimize_restarts=10,verbose=False)
+
+            # --- CHOOSE the acquisition optimizer
+            aquisition_optimizer = GPyOpt.optimization.AcquisitionOptimizer(feasible_region)
+
+            # --- CHOOSE the type of acquisition
+            acquisition = GPyOpt.acquisitions.AcquisitionEI(bo_model, feasible_region, optimizer=aquisition_optimizer)
+
+            # --- CHOOSE a collection method
+            evaluator = GPyOpt.core.evaluators.Sequential(acquisition)
+            bo = GPyOpt.methods.ModularBayesianOptimization(bo_model, feasible_region, objective, acquisition, evaluator, initial_design)
+            # --- Stop conditions
+            max_time  = None 
+            max_iter  = 10
+            tolerance = 1e-5     # distance between two consecutive observations  
+
+            # Run the optimization                                                  
+            bo.run_optimization(max_iter = max_iter, max_time = max_time, eps = tolerance, verbosity=True) 
+            sigma, lengthscale = bo.x_opt
+            kern.lengthscales = lengthscale# if wild == 0 else lengthscale*10.
+            kern.variance = sigma**2
+
+#            logging.info("Trying multiple random initialisation...")
+#
+#            for _ in range(30):
+#                s = np.random.uniform(1.,7.)
+#                l = np.random.uniform(2., 25.)
+#                kern.lengthscales = l
+#                kern.variance = s**2
+#                lml = model.compute_log_likelihood()
+#                if lml > best_log_marginal:
+#                    best_hyperparams.append([s,l])
+#                    best_log_marginal = lml
+#                    logging.info("Found good combo ({}): amp {} lengthscale {}".format(lml, s,l))
+#            kern.lengthscales = best_hyperparams[-1][1]
+#            kern.variance = best_hyperparams[-1][0]**2
+#            gp.train.ScipyOptimizer().minimize(model)
+
             logging.info(str(kern.read_trainables()))
             logging.info("Done index {} -> training hyperparams".format(t))
-            Y_var = np.where(detection, 1000.**2, 0.5)
+            Y_var = np.where(detection, np.inf, 0.5)
             model = HGPR(X,Y,Y_var, kern, parallel_iterations=10)
         
             logging.info("Predicting screen from {} to {}".format(start, stop))
-            ystar, varstar = model.predict_f(X_screen)
+            predict_batch_size = 3000
+            ystar,varstar = [],[]
+            for i in range(0,X_screen.shape[0],predict_batch_size):
+                start_ = i
+                stop_ = min(i + predict_batch_size, X_screen.shape[0])
+                ystar_, varstar_ = model.predict_f(X_screen[start_:stop_,:])
+                ystar.append(ystar_)
+                varstar.append(varstar_)
+            ystar = np.concatenate(ystar,axis=1)
+            varstar = np.concatenate(varstar,axis=1)
             logging.info("Done predicting screen from {} to {}".format(start, stop))
             
-            ystar = ystar.reshape((stop-start, Nd_screen, Na))
-            stdstar = np.sqrt(varstar).reshape((stop-start, Nd_screen, Na))
+            ystar = ystar.reshape((stop-start, Nd_screen, Na_screen))
+            stdstar = np.sqrt(varstar).reshape((stop-start, Nd_screen, Na_screen))
             
             posterior_screen_mean.append(ystar)
             posterior_screen_std.append(stdstar)
