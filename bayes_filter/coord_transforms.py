@@ -6,7 +6,7 @@ import numpy as np
 import tensorflow as tf
 from .callbacks import Callback
 from .settings import float_type
-from .misc import make_coord_array
+
 
 
 def tf_coord_transform(transform):
@@ -170,6 +170,8 @@ class ITRSToENUWithReferences_v2(Callback):
         self.output_dtypes = [float_type, float_type, float_type]
         self.name = 'ITRSToENUWithReferences_v2'
         self.squeeze = True
+
+        from .misc import make_coord_array
 
         def transform(Xt, Xd, Xa):
             """
