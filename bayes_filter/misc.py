@@ -23,7 +23,8 @@ from scipy.special import erfinv
 import datetime
 
 def tf_datetime():
-    return tf.py_function(lambda: str(datetime.datetime.now()), [],[tf.string])[0]
+    return tf.timestamp()
+    #tf.py_function(lambda: str(datetime.datetime.now()), [],[tf.string])[0]
 
 def lock_print(lock, *message):
     if not isinstance(lock, list):
@@ -500,7 +501,8 @@ def timer():
     Return system time as tensorflow op
     :return:
     """
-    return tf.py_function(default_timer, [], float_type)
+    return tf.cast(tf.timestamp(), float_type)
+    #tf.py_function(default_timer, [], float_type)
 
 def flatten_batch_dims(t, num_batch_dims=None):
     """
@@ -664,3 +666,18 @@ def sqrt_with_finite_grads(x, name=None):
                 0.5 * tf.math.rsqrt(x))
             return grad_ys * safe_grads
     return tf.sqrt(x), grad
+
+###
+# forward_gradients_v2: Taken from https://github.com/renmengye/tensorflow-forward-ad
+###
+
+def forward_gradients_v2(ys, xs, grad_xs=None, gate_gradients=False):
+    """Forward-mode pushforward analogous to the pullback defined by tf.gradients.
+    With tf.gradients, grad_ys is the vector being pulled back, and here d_xs is
+    the vector being pushed forward."""
+    if type(ys) == list:
+        v = [tf.ones_like(yy) for yy in ys]
+    else:
+        v = tf.ones_like(ys)  # dummy variable
+    g = tf.gradients(ys, xs, grad_ys=v)
+    return tf.gradients(g, v, grad_ys=grad_xs)

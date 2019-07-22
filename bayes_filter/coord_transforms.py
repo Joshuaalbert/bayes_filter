@@ -6,6 +6,7 @@ import numpy as np
 import tensorflow as tf
 from .callbacks import Callback
 from .settings import float_type
+from .misc import make_coord_array
 
 
 def tf_coord_transform(transform):
@@ -147,4 +148,58 @@ class ITRSToENUWithReferences(Callback):
                 result = np.concatenate([result, np.tile(ref_dir, (result.shape[0], 1))],axis=-1)
             result = result.reshape(shape+result.shape[-1:])
             return result
+        return transform
+
+class ITRSToENUWithReferences_v2(Callback):
+    def __init__(self,ref_antenna=None, ref_direction=None, ref_location=None):
+        """
+        Wrapper that creates the function to convert the given coordinates from ITRS to ENU
+
+        :param ref_antenna: float array [3]
+            Location of reference antenna in ITRS.
+        :param ref_direction: float array [2]
+            RA and DEC of reference direction.
+        :param ref_location: float array [3]
+            Point about which to rotate frame.
+        """
+        super(ITRSToENUWithReferences_v2, self).__init__(ref_antenna=ref_antenna,
+                                                      ref_direction=ref_direction,
+                                                      ref_location=ref_location)
+
+    def generate(self, ref_antenna, ref_direction, ref_location):
+        self.output_dtypes = [float_type, float_type, float_type]
+        self.name = 'ITRSToENUWithReferences_v2'
+        self.squeeze = True
+
+        def transform(Xt, Xd, Xa):
+            """
+            Convert the given coordinates from ITRS to ENU
+
+            :param X: float array [Nd, Na,6]
+                The coordinates are ordered [time, ra, dec, itrs.x, itrs.y, itrs.z]
+            :return: float array [Nd, Na, 7(10(13))]
+                The transforms coordinates.
+            """
+            X_out = []
+            ref_ant_out = []
+            ref_dir_out = []
+            for t in range(Xt.shape[0]):
+                obstime = at.Time(Xt[t, 0] / 86400., format='mjd')
+                location = ac.ITRS(x=ref_location[0] * dist_type, y=ref_location[1] * dist_type, z=ref_location[2] * dist_type)
+                ref_ant = ac.ITRS(x=ref_antenna[0] * dist_type, y=ref_antenna[1] * dist_type, z=ref_antenna[2] * dist_type, obstime=obstime)
+                ref_dir = ac.ICRS(ra=ref_direction[0] * angle_type, dec=ref_direction[1]  * angle_type)
+                enu = ENU(location=location, obstime=obstime)
+                ref_ant = ref_ant.transform_to(enu).cartesian.xyz.to(dist_type).value.T
+                ref_dir = ref_dir.transform_to(enu).cartesian.xyz.value.T
+                antennas = ac.ITRS(x=Xa[:, 0] * dist_type, y=Xa[:, 1] * dist_type, z=Xa[:, 2] * dist_type, obstime=obstime)
+                antennas = antennas.transform_to(enu).cartesian.xyz.to(dist_type).value.T
+                directions = ac.ICRS(ra=Xd[:, 0] * angle_type, dec=Xd[:, 1] * angle_type)
+                directions = directions.transform_to(enu).cartesian.xyz.value.T
+                X_out.append(make_coord_array(directions, antennas, flat=False))
+                ref_ant_out.append(ref_ant)
+                ref_dir_out.append(ref_dir)
+            X = np.stack(X_out, axis=0)
+            ref_ant = np.stack(ref_ant_out,axis=0)
+            ref_dir = np.stack(ref_dir_out,axis=0)
+            return [X, ref_ant, ref_dir]
         return transform

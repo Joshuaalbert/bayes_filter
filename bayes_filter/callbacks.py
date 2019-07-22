@@ -309,6 +309,43 @@ class StoreHyperparametersV2(Callback):
 
         return store
 
+class StoreHyperparametersV3(Callback):
+    def __init__(self, store_file):
+        super(StoreHyperparametersV3, self).__init__(store_file=store_file)
+
+    def generate(self, store_file):
+
+        if not isinstance(store_file, str):
+            raise ValueError("store_file should be str {}".format(type(store_file)))
+
+        store_file=os.path.abspath(store_file)
+        if not os.path.exists(store_file):
+            np.savez(store_file, times=np.array([]), amp=np.array([]), lengthscales=np.array([]), a=np.array([]), b=np.array([]))
+
+        self.output_dtypes = [tf.int64]
+        self.name = 'StoreHyperparametersV3'
+
+        def store(time, amp, lengthscales, a, b):
+            data = np.load(store_file)
+
+            times = np.array([time] + list(data['times']))
+            amp = np.array([np.reshape(amp, (-1,))] + list(data['amp']))
+            lengthscales = np.array([lengthscales.reshape((-1,))] + list(data['lengthscales']))
+            a = np.array([a.reshape((-1,))] + list(data['a']))
+            b = np.array([b.reshape((-1,))] + list(data['b']))
+
+            np.savez(store_file,
+                     times=times,
+                     amp=amp,
+                     lengthscales=lengthscales,
+                     a=a,
+                     b=b
+                     )
+
+            return [np.array(len(times),dtype=np.int64)]
+
+        return store
+
 class PlotResults(Callback):
     def __init__(self, hyperparam_store, datapack, solset, lock=None, posterior_name='posterior', plot_directory='./plots', **selection):
         super(PlotResults, self).__init__(hyperparam_store=hyperparam_store,
