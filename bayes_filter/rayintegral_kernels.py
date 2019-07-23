@@ -1,14 +1,11 @@
 import tensorflow_probability as tfp
 from tensorflow_probability.python.internal import dtype_util
 from tensorflow_probability.python.positive_semidefinite_kernels.internal import util
-from tensorflow.python.ops.parallel_for.gradients import batch_jacobian
 
 import tensorflow as tf
 import numpy as np
-from . import logging, float_type
-from collections import OrderedDict
+from . import float_type
 import itertools
-from .misc import flatten_batch_dims
 from . import KERNEL_SCALE
 
 
@@ -75,7 +72,7 @@ class RayKernel(object):
             coord_list = None
             I_coeff = None
             if self.obs_type in ['TEC', 'DTEC', 'DDTEC']:
-                coord_list = [(X1, X2)]
+                coord_list = [(X1[:, 0:3], X1[:, 3:6], X2[:, 0:3], X2[:, 3:6])]
                 I_coeff = [1.]
             if self.obs_type in ['DTEC', 'DDTEC']:
                 coord_list_prior = coord_list
@@ -89,10 +86,9 @@ class RayKernel(object):
                     I_coeff.append(i)
                 for c in coord_list_prior:
                     coord_list.append(c)
-                    coord_list.append((c[0], self._replace_ant(c[1], self.ref_location)))
-                    coord_list.append((self._replace_ant(c[0], self.ref_location), c[1]))
-                    coord_list.append(
-                        (self._replace_ant(c[0], self.ref_location), self._replace_ant(c[1], self.ref_location)))
+                    coord_list.append((c[0], c[1], c[2], self.ref_location[None, :]))
+                    coord_list.append((c[0], self.ref_location[None, :], c[2], c[3]))
+                    coord_list.append((c[0], self.ref_location[None, :], c[2], self.ref_location[None, :]))
             if self.obs_type in ['DDTEC']:
                 coord_list_prior = coord_list
                 I_coeff_prior = I_coeff
@@ -105,10 +101,9 @@ class RayKernel(object):
                     I_coeff.append(i)
                 for c in coord_list_prior:
                     coord_list.append(c)
-                    coord_list.append((c[0], self._replace_dir(c[1], self.ref_direction)))
-                    coord_list.append((self._replace_dir(c[0], self.ref_direction), c[1]))
-                    coord_list.append(
-                        (self._replace_dir(c[0], self.ref_direction), self._replace_dir(c[1], self.ref_direction)))
+                    coord_list.append((c[0], c[1], c[2], self.ref_direction[None, :]))
+                    coord_list.append((c[0], self.ref_direction[None, :], c[2], c[3]))
+                    coord_list.append((c[0], self.ref_direction[None, :], c[2], self.ref_direction[None, :]))
             IK = []
             for i, c in zip(I_coeff, coord_list):
                 IK.append(i * self.I(*c))
@@ -372,80 +367,6 @@ class RQ(IntegrandKernel):
             return self.sigma ** 2 * result
 
 
-def test_rbf_taylor():
-    with tf.Session(graph=tf.Graph()) as sess:
-        N = 2
-        x = tf.constant([[0., 0., t] for t in np.linspace(0., 60., N)], float_type)
-        k = tf.constant(
-            [[0., np.sin(theta), np.cos(theta)] for theta in np.linspace(-4. * np.pi / 180., 4. * np.pi / 180., N)],
-            float_type)
-        k /= tf.linalg.norm(k, axis=1, keepdims=True)
-        #
-        X = tf.concat([k, x], axis=1)
-        theta = tf.constant([1., 10.], float_type)
-        a = tf.constant(200., float_type)
-        b = tf.constant(100., float_type)
-        mu = None
-        ref_location = X[0, 3:6]
-        ref_direction = X[0, 0:3]
-
-        ref_kern = RandomKernel(M52(theta), 2000, a, b, mu=mu, ref_location=ref_location, ref_direction=ref_direction,
-                                obs_type='DTEC', ionosphere_type='flat')
-        ref_K = ref_kern.K(X, X)
-
-        ref_g = tf.gradients(ref_K, [theta])[0]
-        ref_K = sess.run(ref_K)
-        ref_g = sess.run(ref_g)
-        F = []
-        R = [4, 5, 6, 7, 8, 9]
-        import pylab as plt
-        plt.imshow(ref_K)
-        plt.colorbar()
-        plt.show()
-        for res in R:
-            test_kern = TrapezoidKernel(M52(theta), res, a, b, mu=mu, ref_location=ref_location,
-                                        ref_direction=ref_direction,
-                                        obs_type='DTEC', ionosphere_type='flat')
-            from timeit import default_timer
-            K = test_kern.K(X, X)
-            g = tf.gradients(K, [theta])[0]
-            t0 = default_timer()
-            K = sess.run(K)
-            print(K)
-            print((default_timer() - t0))
-            t0 = default_timer()
-            g = sess.run(g)
-            print((default_timer() - t0))
-            plt.imshow(K)
-            plt.colorbar()
-            plt.show()
-            print(ref_g, g, ref_g - g)
-
-            f = np.mean(np.abs(ref_K - K))
-            F.append(f)
-
-        plt.plot(R, F)
-
-        plt.show()
-
-        # ref_kern = RandomKernel(RBF(theta), 2000, a, b, mu=mu, ref_location = ref_location, ref_direction = ref_direction, obs_type='DTEC', ionosphere_type='flat')
-        # g = tf.gradients(tf.reduce_sum(ref_kern.K(X,X)), [theta])[0]
-        # ref_g = sess.run(g)
-        # F = []
-        # R = [2,3,4,5]
-        # for res in R:
-        #     test_kern = TaylorKernel(RBF(theta), res, a, b, mu=mu, ref_location=ref_location, ref_direction=ref_direction,
-        #                  obs_type='DTEC', ionosphere_type='flat')
-        #     g = tf.gradients(tf.reduce_sum(test_kern.K(X, X)), [theta])[0]
-        #
-        #     f = np.mean(np.abs(ref_g - sess.run(g)))
-        #     F.append(f)
-        # import pylab as plt
-        # plt.plot(R,F)
-        #
-        # plt.show()
-
-
 class TaylorKernel(RayKernel):
     def __init__(self, integrand_kernel: IntegrandKernel, partitions, a, b, mu=None, ref_location=None,
                  ref_direction=None, obs_type='DTEC', ionosphere_type='flat'):
@@ -457,10 +378,8 @@ class TaylorKernel(RayKernel):
             partitions = list(np.stack([partitions[:-1], partitions[1:]], axis=1))
         self.regions = list(itertools.product(partitions, partitions))
 
-    def I(self, X1, X2):
+    def I(self, k1, x1, k2, x2):
         with tf.name_scope("TaylorKernel_I"):
-            k1, x1 = X1[:, 0:3], X1[:, 3:6]
-            k2, x2 = X2[:, 0:3], X2[:, 3:6]
             l1, m1, ds1 = self.calculate_ray_endpoints(x1, k1)
             l2, m2, ds2 = self.calculate_ray_endpoints(x2, k2)
 
@@ -504,10 +423,8 @@ class RandomKernel(RayKernel):
         self.integrand_kernel = integrand_kernel
         self.resolution = resolution
 
-    def I(self, X1, X2):
+    def I(self, k1, x1, k2, x2):
         with tf.name_scope("RandomKernel_I"):
-            k1, x1 = X1[:, 0:3], X1[:, 3:6]
-            k2, x2 = X2[:, 0:3], X2[:, 3:6]
             l1, m1, ds1 = self.calculate_ray_endpoints(x1, k1)
             l2, m2, ds2 = self.calculate_ray_endpoints(x2, k2)
 
@@ -550,7 +467,7 @@ class TrapezoidKernel(RayKernel):
         self.resolution = resolution
         self.use_map_fn = use_map_fn
 
-    def I(self, X1, X2):
+    def I(self, k1, x1, k2, x2):
         """
         Calculate the ((D)D)TEC kernel based on the FED kernel.
 
@@ -563,13 +480,9 @@ class TrapezoidKernel(RayKernel):
 
         with tf.name_scope('TrapezoidKernel_I'):
 
-            k1, x1 = X1[:, 0:3], X1[:, 3:6]
-            k2, x2 = X2[:, 0:3], X2[:, 3:6]
             l1, m1, ds1 = self.calculate_ray_endpoints(x1, k1)
             l2, m2, ds2 = self.calculate_ray_endpoints(x2, k2)
 
-            N = tf.shape(k1)[0]
-            M = tf.shape(k2)[0]
             # N,M,3
             L12 = (l1[:, None, :] - l2[None, :, :])
 
@@ -581,6 +494,8 @@ class TrapezoidKernel(RayKernel):
             lamda = L12 + s[:, None, None, None, None] * m1[:, None, :] - s[None, :, None, None, None] * m2[None, :, :]
 
             if self.use_map_fn:
+                N = tf.shape(lamda)[2]
+                M = tf.shape(lamda)[3]
                 # res*res, N,M,3
                 lamda = tf.reshape(lamda, (-1, N, M, 3))
                 # res*res, N,M
