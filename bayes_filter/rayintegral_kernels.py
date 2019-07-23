@@ -240,6 +240,9 @@ class RBF(IntegrandKernel):
             # return custom_K(self.theta), d2K
 
 
+EQ = RBF
+
+
 class M52(IntegrandKernel):
     def __init__(self, theta):
         super(M52, self).__init__(theta, has_d2K=False)
