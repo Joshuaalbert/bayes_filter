@@ -230,6 +230,8 @@ class DTECIsotropicTimeGeneral(object):
         self.b = b
         self.scale_mixture_rate = scale_mixture_rate
 
+        time_kernel = None
+
         if fed_kernel in ["RBF", "SE"]:
             fed_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
                 amplitude=None,
@@ -248,19 +250,14 @@ class DTECIsotropicTimeGeneral(object):
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternFiveHalves(
                 length_scale=self.timescale.constrained_value[:,0])
-        if fed_kernel in ["M12", "OU"]:
-            fed_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
-                amplitude=None,
-                length_scale=self.lengthscales.constrained_value[:,0])
-            time_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
-                length_scale=self.timescale.constrained_value[:,0])
         if fed_kernel in ["RQ"]:
             fed_kernel = tfp.positive_semidefinite_kernels.RationalQuadratic(
                 amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0],
                 scale_mixture_rate=self.scale_mixture_rate.constrained_value[:,0])
-            time_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
+            time_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
                 length_scale=self.timescale.constrained_value[:,0])
+
         self.fed_kernel = fed_kernel
         self.time_kernel = time_kernel
         self.resolution = tf.convert_to_tensor(resolution, tf.int32)
