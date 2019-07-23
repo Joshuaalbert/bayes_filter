@@ -9,6 +9,7 @@ from . import logging, float_type
 from collections import OrderedDict
 import itertools
 from .misc import flatten_batch_dims
+from . import KERNEL_SCALE
 
 
 def _validate_arg_if_not_none(arg, assertion, validate_args):
@@ -52,10 +53,12 @@ class RayKernel(object):
 
                 # N
                 sm = sec * (self.a + self.ref_location[2] - x[:, 2]) - 0.5 * bsec
-                # N
+                # N, 3
                 l = x + k * sm[:, None]
+                # N, 3
                 m = k * bsec[:, None]
-                return l, m
+                ds = bsec
+                return l, m, ds
 
         raise NotImplementedError("curved not implemented")
 
@@ -110,7 +113,7 @@ class RayKernel(object):
             for i, c in zip(I_coeff, coord_list):
                 IK.append(i * self.I(*c))
 
-            K = tf.add_n(IK)
+            K = tf.math.square(tf.constant(KERNEL_SCALE, float_type)) * tf.add_n(IK)
 
             return K
 
@@ -457,12 +460,10 @@ class TaylorKernel(RayKernel):
     def I(self, X1, X2):
         with tf.name_scope("TaylorKernel_I"):
             k1, x1 = X1[:, 0:3], X1[:, 3:6]
-            l1, m1 = self.calculate_ray_endpoints(x1, k1)
-            if X2 is None:
-                l2, m2 = l1, m1
-            else:
-                k2, x2 = X2[:, 0:3], X2[:, 3:6]
-                l2, m2 = self.calculate_ray_endpoints(x2, k2)
+            k2, x2 = X2[:, 0:3], X2[:, 3:6]
+            l1, m1, ds1 = self.calculate_ray_endpoints(x1, k1)
+            l2, m2, ds2 = self.calculate_ray_endpoints(x2, k2)
+
             # N,M,3
             L12 = (l1[:, None, :] - l2[None, :, :])
 
@@ -506,12 +507,12 @@ class RandomKernel(RayKernel):
     def I(self, X1, X2):
         with tf.name_scope("RandomKernel_I"):
             k1, x1 = X1[:, 0:3], X1[:, 3:6]
-            l1, m1 = self.calculate_ray_endpoints(x1, k1)
-            if X2 is None:
-                l2, m2 = l1, m1
-            else:
-                k2, x2 = X2[:, 0:3], X2[:, 3:6]
-                l2, m2 = self.calculate_ray_endpoints(x2, k2)
+            k2, x2 = X2[:, 0:3], X2[:, 3:6]
+            l1, m1, ds1 = self.calculate_ray_endpoints(x1, k1)
+            l2, m2, ds2 = self.calculate_ray_endpoints(x2, k2)
+
+            ds = (ds1[:, None] * ds2[None, :])
+
             # N,M,3
             L12 = (l1[:, None, :] - l2[None, :, :])
 
@@ -526,7 +527,7 @@ class RandomKernel(RayKernel):
             # I = tf.scan(lambda accumulated, lamda: accumulated + self.integrand_kernel.apply(lamda)[0], initializer=tf.zeros([N,M], float_type), elems=lamda)
             # return I/self.resolution
             I = tf.map_fn(lambda lamda: self.integrand_kernel.apply(lamda, return_d2K=False), lamda)
-            return tf.reduce_mean(I, axis=0)
+            return ds * tf.reduce_mean(I, axis=0)
 
 
 class TrapezoidKernel(RayKernel):
@@ -563,19 +564,18 @@ class TrapezoidKernel(RayKernel):
         with tf.name_scope('TrapezoidKernel_I'):
 
             k1, x1 = X1[:, 0:3], X1[:, 3:6]
-            l1, m1 = self.calculate_ray_endpoints(x1, k1)
-            if X2 is None:
-                l2, m2 = l1, m1
-            else:
-                k2, x2 = X2[:, 0:3], X2[:, 3:6]
-                l2, m2 = self.calculate_ray_endpoints(x2, k2)
+            k2, x2 = X2[:, 0:3], X2[:, 3:6]
+            l1, m1, ds1 = self.calculate_ray_endpoints(x1, k1)
+            l2, m2, ds2 = self.calculate_ray_endpoints(x2, k2)
+
             N = tf.shape(k1)[0]
             M = tf.shape(k2)[0]
             # N,M,3
             L12 = (l1[:, None, :] - l2[None, :, :])
 
             s = tf.cast(tf.linspace(0., 1., self.resolution + 1), dtype=float_type)
-            ds = tf.math.reciprocal(tf.cast(self.resolution, float_type))
+            ds = (ds1[:, None] * tf.math.reciprocal(tf.cast(self.resolution, float_type))) * (
+                        ds2[None, :] ** tf.math.reciprocal(tf.cast(self.resolution, float_type)))
 
             # res, res, N, M, 3
             lamda = L12 + s[:, None, None, None, None] * m1[:, None, :] - s[None, :, None, None, None] * m2[None, :, :]
@@ -591,15 +591,15 @@ class TrapezoidKernel(RayKernel):
                 I = self.integrand_kernel.apply(lamda, return_d2K=False)
 
             # N,M
-            I = 0.25 * tf.math.square(ds) * tf.add_n([I[0, 0, :, :],
-                                                      I[-1, 0, :, :],
-                                                      I[0, -1, :, :],
-                                                      I[-1, -1, :, :],
-                                                      2 * tf.reduce_sum(I[-1, :, :, :], axis=[0]),
-                                                      2 * tf.reduce_sum(I[0, :, :, :], axis=[0]),
-                                                      2 * tf.reduce_sum(I[:, -1, :, :], axis=[0]),
-                                                      2 * tf.reduce_sum(I[:, 0, :, :], axis=[0]),
-                                                      4 * tf.reduce_sum(I[1:-1, 1:-1, :, :], axis=[0, 1])])
+            I = 0.25 * ds * tf.add_n([I[0, 0, :, :],
+                                      I[-1, 0, :, :],
+                                      I[0, -1, :, :],
+                                      I[-1, -1, :, :],
+                                      2 * tf.reduce_sum(I[-1, :, :, :], axis=[0]),
+                                      2 * tf.reduce_sum(I[0, :, :, :], axis=[0]),
+                                      2 * tf.reduce_sum(I[:, -1, :, :], axis=[0]),
+                                      2 * tf.reduce_sum(I[:, 0, :, :], axis=[0]),
+                                      4 * tf.reduce_sum(I[1:-1, 1:-1, :, :], axis=[0, 1])])
             return I
 
 
