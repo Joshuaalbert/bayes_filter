@@ -239,7 +239,6 @@ class RBF(IntegrandKernel):
             return K, d2K
             # return custom_K(self.theta), d2K
 
-EQ = RBF
 
 class M52(IntegrandKernel):
     def __init__(self, theta):
@@ -540,11 +539,12 @@ class TrapezoidKernel(RayKernel):
     """
 
     def __init__(self, integrand_kernel: IntegrandKernel, resolution, a, b, mu=None, ref_location=None,
-                 ref_direction=None, obs_type='DTEC', ionosphere_type='flat'):
+                 ref_direction=None, obs_type='DTEC', ionosphere_type='flat', use_map_fn=True):
         super(TrapezoidKernel, self).__init__(a, b, mu=mu, ref_location=ref_location, ref_direction=ref_direction,
                                               obs_type=obs_type, ionosphere_type=ionosphere_type)
         self.integrand_kernel = integrand_kernel
         self.resolution = resolution
+        self.use_map_fn = use_map_fn
 
     def I(self, X1, X2):
         """
@@ -576,12 +576,16 @@ class TrapezoidKernel(RayKernel):
 
             # res, res, N, M, 3
             lamda = L12 + s[:, None, None, None, None] * m1[:, None, :] - s[None, :, None, None, None] * m2[None, :, :]
-            # res*res, N,M,3
-            lamda = tf.reshape(lamda, (-1, N, M, 3))
-            # res*res, N,M
-            I = tf.map_fn(lambda lamda: self.integrand_kernel.apply(lamda, return_d2K=False), lamda)
-            # res,res, N,M
-            I = tf.reshape(I, (self.resolution + 1, self.resolution + 1, N, M))
+
+            if self.use_map_fn:
+                # res*res, N,M,3
+                lamda = tf.reshape(lamda, (-1, N, M, 3))
+                # res*res, N,M
+                I = tf.map_fn(lambda lamda: self.integrand_kernel.apply(lamda, return_d2K=False), lamda)
+                # res,res, N,M
+                I = tf.reshape(I, (self.resolution + 1, self.resolution + 1, N, M))
+            else:
+                I = self.integrand_kernel.apply(lamda, return_d2K=False)
 
             # N,M
             I = 0.25 * tf.math.square(ds) * tf.add_n([I[0, 0, :, :],
