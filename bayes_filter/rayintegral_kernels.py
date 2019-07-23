@@ -68,6 +68,8 @@ class RayKernel(object):
         return tf.concat([x_tile, X[:, 3:6]], axis=1)
 
     def K(self, X1, X2):
+        if X2 is None:
+            X2 = X1
         with tf.name_scope('RayKernel_K'):
             coord_list = None
             I_coeff = None
@@ -488,7 +490,7 @@ class TrapezoidKernel(RayKernel):
 
             s = tf.cast(tf.linspace(0., 1., self.resolution + 1), dtype=float_type)
             ds = (ds1[:, None] * tf.math.reciprocal(tf.cast(self.resolution, float_type))) * (
-                        ds2[None, :] ** tf.math.reciprocal(tf.cast(self.resolution, float_type)))
+                        ds2[None, :] * tf.math.reciprocal(tf.cast(self.resolution, float_type)))
 
             # res, res, N, M, 3
             lamda = L12 + s[:, None, None, None, None] * m1[:, None, :] - s[None, :, None, None, None] * m2[None, :, :]
