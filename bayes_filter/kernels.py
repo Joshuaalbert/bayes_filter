@@ -198,6 +198,7 @@ class DTECIsotropicTimeGeneral(object):
 
     def __init__(self, variance=1., lengthscales=10.0,
                  a=250., b=50.,  timescale=30., ref_location=[0.,0.,0.],resolution=3,
+                 scale_mixture_rate = 1/3.,
                  fed_kernel='RBF', obs_type='TEC', squeeze=True, kernel_params={}):
         if obs_type not in DTECIsotropicTimeGeneral.allowed_obs_type:
             raise ValueError(
@@ -217,6 +218,9 @@ class DTECIsotropicTimeGeneral(object):
         if not isinstance(b, Parameter):
             b = Parameter(bijector=ScaledPositiveBijector(100.), constrained_value=b, shape=(-1,1))
 
+        if not isinstance(scale_mixture_rate, Parameter):
+            scale_mixture_rate = Parameter(bijector=ScaledPositiveBijector(scale_mixture_rate), constrained_value=scale_mixture_rate, shape=(-1,1))
+
         self.ref_location = tf.convert_to_tensor(ref_location,float_type)
 
         self.variance = variance
@@ -224,6 +228,7 @@ class DTECIsotropicTimeGeneral(object):
         self.timescale = timescale
         self.a = a
         self.b = b
+        self.scale_mixture_rate = scale_mixture_rate
 
         if fed_kernel in ["RBF", "SE"]:
             fed_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
@@ -248,6 +253,13 @@ class DTECIsotropicTimeGeneral(object):
                 amplitude=None,
                 length_scale=self.lengthscales.constrained_value[:,0])
             time_kernel = tfp.positive_semidefinite_kernels.MaternOneHalf(
+                length_scale=self.timescale.constrained_value[:,0])
+        if fed_kernel in ["RQ"]:
+            fed_kernel = tfp.positive_semidefinite_kernels.RationalQuadratic(
+                amplitude=None,
+                length_scale=self.lengthscales.constrained_value[:,0],
+                scale_mixture_rate=self.scale_mixture_rate.constrained_value[:,0])
+            time_kernel = tfp.positive_semidefinite_kernels.ExponentiatedQuadratic(
                 length_scale=self.timescale.constrained_value[:,0])
         self.fed_kernel = fed_kernel
         self.time_kernel = time_kernel
