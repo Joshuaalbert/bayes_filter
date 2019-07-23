@@ -179,8 +179,8 @@ class ITRSToENUWithReferences_v2(Callback):
 
             :param X: float array [Nd, Na,6]
                 The coordinates are ordered [time, ra, dec, itrs.x, itrs.y, itrs.z]
-            :return: float array [Nd, Na, 7(10(13))]
-                The transforms coordinates.
+            :return: float array [Nt, Nd, Na, 6] [Nt, 3] [Nt, 3]
+                The transforms coordinates, ref_ants, ref_dirs
             """
             X_out = []
             ref_ant_out = []
@@ -201,7 +201,7 @@ class ITRSToENUWithReferences_v2(Callback):
                 ref_ant_out.append(ref_ant)
                 ref_dir_out.append(ref_dir)
             X = np.stack(X_out, axis=0)
-            ref_ant = np.stack(ref_ant_out,axis=0)
-            ref_dir = np.stack(ref_dir_out,axis=0)
+            ref_ant = np.concatenate(ref_ant_out,axis=0)
+            ref_dir = np.concatenate(ref_dir_out,axis=0)
             return [X, ref_ant, ref_dir]
         return transform
