@@ -360,7 +360,7 @@ class DataPack(object):
                 try:
                     axes = val_leaf.attrs['AXES'].split(',')
                 except TypeError:
-                    axes = val_leaf.attrs['AXES'].split(b',')
+                    axes = [s.decode() for s in val_leaf.attrs['AXES'].split(b',')]
                 shape = []
                 type = []
                 vals = []
