@@ -7,8 +7,10 @@ from .plotting import DatapackPlotter
 import pylab as plt
 
 
-def callback_sequence(callbacks, args, async=False):
-    if async:
+
+def callback_sequence(callbacks, args, async_=False):
+
+    if async_:
         ops = []
         for arg, callback in zip(args, callbacks):
             if not isinstance(arg, (tuple, list)):
@@ -103,12 +105,12 @@ class Callback(object):
             return tf.py_function(py_func, Tin, self.output_dtypes, name=self.name)
 
 class Chain(Callback):
-    def __init__(self, *callbacks, async = False):
+    def __init__(self, *callbacks, async_ = False):
         for cb in callbacks:
             if not isinstance(cb, Callback):
                 raise ValueError("All inputs should be Callbacks, got {}".format(type(cb)))
         self._callbacks = callbacks
-        self._async = async
+        self._async = async_
 
     def __call__(self, *args):
         if self._async:
