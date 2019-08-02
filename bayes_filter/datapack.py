@@ -357,7 +357,10 @@ class DataPack(object):
                 solset_group = self._H.root._v_groups[self.current_solset]
                 soltab_group = solset_group._v_groups[soltab]
                 val_leaf = soltab_group._v_leaves['val']
-                axes = val_leaf.attrs['AXES'].split(',')
+                try:
+                    axes = val_leaf.attrs['AXES'].split(',')
+                except TypeError:
+                    axes = val_leaf.attrs['AXES'].split(b',')
                 shape = []
                 type = []
                 vals = []
