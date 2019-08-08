@@ -90,7 +90,7 @@ def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_na
             if make_screen_solset:
                 logging.info("Deleting existing solset: {}".format(screen_solset))
                 datapack.delete_solset(screen_solset)
-        if data_solset not in datapack.solsets and make_data_solset: #or screen_solset not in datapack.solsets:
+        if data_solset not in datapack.solsets and make_data_solset:
             logging.info("Creating posterior data solset")
             datapack.current_solset = solset
             datapack.select(ant=None, time=None, dir=None, freq=None, pol=None)
