@@ -76,17 +76,22 @@ def laplace_gaussian_marginalisation(L, y, order = 10):
 
 
 def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_name: str,
-                                   screen_directions = None, srl_file = None,
+                                   screen_directions = None,
+                                   make_soltabs = ['phase000', 'amplitude000', 'tec000'],
+                                   make_screen_solset = True, make_data_solset = True,
                                         remake_posterior_solsets=False):
     screen_solset = "screen_{}".format(posterior_name)
     data_solset = 'data_{}'.format(posterior_name)
     with datapack:
         if remake_posterior_solsets:
-            datapack.delete_solset(data_solset)
-            datapack.delete_solset(screen_solset)
-            logging.info("Deleting existing solsets: {} {}".format(data_solset, screen_solset))
-        if data_solset not in datapack.solsets or screen_solset not in datapack.solsets:
-            logging.info("Creating posterior solsets")
+            if make_data_solset:
+                logging.info("Deleting existing solset: {}".format(data_solset))
+                datapack.delete_solset(data_solset)
+            if make_screen_solset:
+                logging.info("Deleting existing solset: {}".format(screen_solset))
+                datapack.delete_solset(screen_solset)
+        if data_solset not in datapack.solsets and make_data_solset: #or screen_solset not in datapack.solsets:
+            logging.info("Creating posterior data solset")
             datapack.current_solset = solset
             datapack.select(ant=None, time=None, dir=None, freq=None, pol=None)
             axes = datapack.axes_phase
@@ -96,35 +101,53 @@ def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_na
             freq_labels, freqs = datapack.get_freqs(axes['freq'])
             pol_labels, pols = datapack.get_pols(axes['pol'])
             Npol, Nd, Na, Nf, Nt = len(pols), len(directions), len(antennas), len(freqs), len(times)
+
             datapack.add_solset(data_solset,
                                 array_file=DataPack.lofar_array,
                                 directions=np.stack([directions.ra.to(angle_type).value,
                                                      directions.dec.to(angle_type).value], axis=1),
                                 patch_names=patch_names)
-
-            datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
-                                dir=patch_names)
-            datapack.add_soltab('clock000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels,
-                                ant=antenna_labels, dir=patch_names)
-            datapack.add_soltab('phase000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
-                                ant=antenna_labels, dir=patch_names)
-            datapack.add_soltab('amplitude000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
-                                ant=antenna_labels, dir=patch_names)
-
+            if 'tec000' in make_soltabs:
+                datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
+                                    dir=patch_names)
+            if 'clock000' in make_soltabs:
+                datapack.add_soltab('clock000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels,
+                                    ant=antenna_labels, dir=patch_names)
+            if 'phase000' in make_soltabs:
+                datapack.add_soltab('phase000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                    ant=antenna_labels, dir=patch_names)
+            if 'amplitude000' in make_soltabs:
+                datapack.add_soltab('amplitude000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                    ant=antenna_labels, dir=patch_names)
+        if screen_solset not in datapack.solsets and make_screen_solset:
+            logging.info("Creating posterior screen solset")
+            datapack.current_solset = solset
+            datapack.select(ant=None, time=None, dir=None, freq=None, pol=None)
+            axes = datapack.axes_phase
+            antenna_labels, antennas = datapack.get_antennas(axes['ant'])
+            patch_names, directions = datapack.get_directions(axes['dir'])
+            timestamps, times = datapack.get_times(axes['time'])
+            freq_labels, freqs = datapack.get_freqs(axes['freq'])
+            pol_labels, pols = datapack.get_pols(axes['pol'])
+            Npol, Nd, Na, Nf, Nt = len(pols), len(directions), len(antennas), len(freqs), len(times)
             datapack.add_solset(screen_solset,
                                 array_file=DataPack.lofar_array,
                                 directions=np.stack([screen_directions.ra.to(angle_type).value,
                                                      screen_directions.dec.to(angle_type).value], axis=1))
             screen_patch_names, _ = datapack.directions
-            datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
-                                dir=screen_patch_names)
-            datapack.add_soltab('clock000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels,
-                                ant=antenna_labels, dir=screen_patch_names)
-            datapack.add_soltab('phase000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
-                                ant=antenna_labels, dir=screen_patch_names)
-            datapack.add_soltab('amplitude000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
-                                ant=antenna_labels, dir=screen_patch_names)
-            datapack.current_solset = solset
+            if 'tec000' in make_soltabs:
+                datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
+                                    dir=screen_patch_names)
+            if 'clock000' in make_soltabs:
+                datapack.add_soltab('clock000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels,
+                                    ant=antenna_labels, dir=screen_patch_names)
+            if 'phase000' in make_soltabs:
+                datapack.add_soltab('phase000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                    ant=antenna_labels, dir=screen_patch_names)
+            if 'amplitude000' in make_soltabs:
+                datapack.add_soltab('amplitude000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                    ant=antenna_labels, dir=screen_patch_names)
+        datapack.current_solset = solset
 
 def dict2namedtuple(d, name="Result"):
     res = namedtuple(name, list(d.keys()))
@@ -319,7 +342,7 @@ def make_example_datapack(Nd, Nf, Nt, pols=None,
         return dict(datapack=datapack, directions=directions, antennas=antennas, freqs=freqs, times=times, pols=pols, dtec=dtecs, phase=phase)
 
 
-def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/image.pybdsm.srl.fits', flux_limit = 0.1, max_N = None, min_spacing_arcmin = 1.):
+def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/image.pybdsm.srl.fits', flux_limit = 0.1, max_N = None, min_spacing_arcmin = 1., plot=False):
     """Given a srl file containing the sources extracted from the apparent flux image of the field,
     decide the screen directions
 
@@ -389,24 +412,25 @@ def get_screen_directions(srl_fits='/home/albert/git/bayes_tec/scripts/data/imag
         ra = ra[arg]
         dec = dec[arg]
         c = c[arg]
+    if plot:
+        plt.scatter(ra,dec,c=np.linspace(0.,1.,len(ra)),cmap='jet',s=np.sqrt(10000.*f),alpha=1.)
 
-    plt.scatter(ra,dec,c=np.linspace(0.,1.,len(ra)),cmap='jet',s=np.sqrt(10000.*f),alpha=1.)
-
-    target = Circle((126., 65.),radius = 3.56/2.,fc=None, alpha=0.2)
-    ax = plt.gca()
-    ax.add_patch(target)
-    target = Circle((126., 65.),radius = 4.75/2.,fc=None, alpha=0.2)
-    ax = plt.gca()
-    ax.add_patch(target)
-    plt.title("Brightest {} sources".format(len(f)))
-    plt.xlabel('ra (deg)')
-    plt.xlabel('dec (deg)')
-    plt.savefig("scren_directions.png")
-    interdist = pdist(np.stack([ra,dec],axis=1)*60.)
-    plt.hist(interdist,bins=len(f))
-    plt.title("inter-facet distance distribution")
-    plt.xlabel('inter-facet distance [arcmin]')
-    plt.savefig("interfacet_distance_dist.png")
+        target = Circle((126., 65.),radius = 3.56/2.,fc=None, alpha=0.2)
+        ax = plt.gca()
+        ax.add_patch(target)
+        target = Circle((126., 65.),radius = 4.75/2.,fc=None, alpha=0.2)
+        ax = plt.gca()
+        ax.add_patch(target)
+        plt.title("Brightest {} sources".format(len(f)))
+        plt.xlabel('ra (deg)')
+        plt.xlabel('dec (deg)')
+        plt.savefig("scren_directions.png")
+        interdist = pdist(np.stack([ra,dec],axis=1)*60.)
+        plt.hist(interdist,bins=len(f))
+        plt.title("inter-facet distance distribution")
+        plt.xlabel('inter-facet distance [arcmin]')
+        plt.savefig("interfacet_distance_dist.png")
+        plt.show()
     return ac.ICRS(ra=ra*au.deg, dec=dec*au.deg)
 
 
