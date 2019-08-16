@@ -1,9 +1,9 @@
-from bayes_filter.model import AverageModel
-from bayes_filter.datapack import DataPack
+from .model import AverageModel
+from .datapack import DataPack
 from typing import List, Union
-from bayes_filter.coord_transforms import ITRSToENUWithReferences_v2
-from bayes_filter import logging, angle_type, dist_type, float_type
-from bayes_filter.misc import get_screen_directions, maybe_create_posterior_solsets
+from .coord_transforms import ITRSToENUWithReferences_v2
+from . import logging, angle_type, dist_type, float_type
+from .misc import get_screen_directions, maybe_create_posterior_solsets
 import numpy as np
 import tensorflow as tf
 import os, glob
