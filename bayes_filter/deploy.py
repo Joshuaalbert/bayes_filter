@@ -22,11 +22,11 @@ class Deployment(object):
         self.cwd = cwd
         logging.info("Using working direction {}".format(cwd))
 
-        if isinstance(datapack, str):
-            datapack = DataPack(datapack)
+        if isinstance(datapack, DataPack):
+            datapack = datapack.filename
+        datapack = DataPack(datapack, readonly=False)
         screen_directions = get_screen_directions(srl_file, flux_limit=flux_limit, max_N=max_N,
                                                   min_spacing_arcmin=min_spacing_arcmin)
-        datapack = DataPack(datapack, readonly=False)
         maybe_create_posterior_solsets(datapack, solset, posterior_name='posterior',
                                    screen_directions=screen_directions,
                                        make_soltabs=['phase000', 'tec000'])
@@ -34,8 +34,13 @@ class Deployment(object):
         datapack.current_solset = solset
         self.select = dict(ant=ant, dir=dir, time=time, freq=freq, pol=pol)
         datapack.select(**self.select)
+        phase, _ = datapack.phase
+        phase = phase.astype(np.float64)
+        self.phase_di = phase[:, ref_dir_idx:ref_dir_idx+1, ...]
         tec, axes = datapack.tec
+        tec = tec.astype(np.float64)
         tec_uncert, _ = datapack.weights_tec
+        tec_uncert = tec_uncert.astype(np.float64)
         self.directional_deploy = directional_deploy
         if self.directional_deploy:
             # Nd, Na, Nt -> Nt, Na, Nd
@@ -43,10 +48,10 @@ class Deployment(object):
             self.Nt, self.Na, self.Nd = tec.shape
             tec_uncert = tec_uncert[0, ...].transpose((2, 1, 0))
         else:
-            # Nd, Na, Nt
-            tec = tec[0, ...]
-            self.Nd, self.Na, self.Nt = tec.shape
-            tec_uncert = tec_uncert[0, ...]
+            # Nt, Nd, Na
+            tec = tec[0, ...].transpose((2,0,1))
+            self.Nt, self.Nd, self.Na = tec.shape
+            tec_uncert = tec_uncert[0, ...].transpose((2,0,1))
         _, times = datapack.get_times(axes['time'])
         Xt = (times.mjd * 86400.)[:, None]
         _, directions = datapack.get_directions(axes['dir'])
@@ -73,6 +78,8 @@ class Deployment(object):
         self.tec_uncert = tec_uncert
         self.block_size = block_size
 
+        self.names = None
+        self.models = None
 
     def run(self, model_generator):
         with tf.Session(graph=tf.Graph()) as tf_session:
@@ -91,7 +98,7 @@ class Deployment(object):
                 # Nd_screen, 3
                 tf_X_screen = tf_X_screen[0, :, 0, :3]
             else:
-                # Nt * Nd * Na, 6
+                # 1 * Nd * Na, 6
                 tf_X = tf.reshape(tf_X, (-1, 6))
                 # Nt * Nd_screen * Na, 6
                 tf_X_screen = tf.reshape(tf_X_screen, (-1, 6))
@@ -99,10 +106,13 @@ class Deployment(object):
             post_mean_array = []
             post_std_array = []
             weights_array = []
+            log_marginal_likelihood_array = []
 
             for t in range(0, self.Nt, self.block_size):
+
                 start = t
                 stop = min(self.Nt, t + self.block_size)
+                block_size = stop - start
                 mid_time = start + (stop - start) // 2
                 logging.info("Beginning time block {} to {}".format(start, stop))
 
@@ -111,29 +121,49 @@ class Deployment(object):
                 feed_dict[Xa_pl] = self.Xa
                 feed_dict[Xd_pl] = self.Xd
                 feed_dict[Xd_screen_pl] = self.Xd_screen
-                feed_dict[Xt_pl] = self.Xt[start:stop, :]
+                feed_dict[Xt_pl] = self.Xt[mid_time:mid_time+1, :]
 
-                X, X_screen, ref_direction = tf_session.run([tf_X, tf_X_screen, tf_ref_dir],
+                X, X_screen, ref_direction, ref_location = tf_session.run([tf_X, tf_X_screen, tf_ref_dir, tf_ref_ant],
                                                  feed_dict)
 
                 if self.directional_deploy:
-                    # Nt, Na, Nd
-                    Y = np.transpose(self.tec[start:stop,:,:], (0, 2,1))
-                    # block_size*Na, Nd
-                    batch_size = Y.shape
-                    Y = Y.reshape((-1, self.Nd))
-                    Y_var = np.square(np.reshape(np.transpose(self.tec_uncert[start:stop,:,:], (0, 2,1)), (-1, self.Nd)))
+                    # block_size, Na, Nd
+                    Y = self.tec[start:stop,:,:]
+                    # block_size, Na, Nd
+                    # Y = Y.reshape((-1, self.Nd))
+                    Y_var = np.square(self.tec_uncert[start:stop,:,:])
+                    logging.info(
+                        "X: {}, Y: {}, Y_var: {}, X_screen: {} ref_dir: {}".format(X.shape, Y.shape, Y_var.shape,
+                                                                                   X_screen.shape, ref_direction))
+                    if self.models is None:
+                        self.models = model_generator(X, Y, Y_var, ref_direction, reg_param=1., parallel_iterations=10)
+                        self.names = [m.name for m in self.models]
+                    for model in self.models:
+                        model.X = X
+                        model.Y = Y
+                        model.Y_var = Y_var
+                        model.ref_direction = ref_direction
+
                 else:
                     #block_size, Nd, Na
                     Y = self.tec[start:stop, :, :]
-                    batch_shape = Y.shape
                     Y = Y.reshape((-1, self.Nd*self.Na))
                     # block_size, Nd, Na
                     Y_var = np.square(self.tec_uncert[start:stop, :, :]).reshape((-1, self.Nd*self.Na))
+                    logging.info(
+                        "X: {}, Y: {}, Y_var: {}, X_screen: {} ref_dir: {} ref_ant: {}".format(X.shape, Y.shape, Y_var.shape,
+                                                                                   X_screen.shape, ref_direction, ref_location))
+                    if self.models is None:
+                        self.models = model_generator(X, Y, Y_var, ref_direction, ref_location, reg_param=1., parallel_iterations=10)
+                        self.names = [m.name for m in self.models]
+                    for model in self.models:
+                        model.X = X
+                        model.Y = Y
+                        model.Y_var = Y_var
+                        model.ref_direction = ref_direction
+                        model.ref_location = ref_location
 
-                models = model_generator(X, Y, Y_var, ref_direction, reg_param = 1., parallel_iterations = 10)
-
-                model = AverageModel(models)
+                model = AverageModel(self.models)
                 logging.info("Optimising models")
                 model.optimise()
                 logging.info("Predicting posteriors and averaging")
@@ -141,32 +171,37 @@ class Deployment(object):
                 (weights, log_marginal_likelihoods), post_mean, post_var = model.predict_f(X_screen, only_mean=False)
                 if self.directional_deploy:
                     # num_models, block_size, Na
-                    weights = np.reshape(weights, (-1,) + batch_shape[:2])
-                    log_marginal_likelihoods = np.reshape(log_marginal_likelihoods, (-1,) + batch_shape[:-2])
+                    weights = np.reshape(weights, (-1, block_size, self.Na))
+                    log_marginal_likelihoods = np.reshape(log_marginal_likelihoods, (-1, block_size, self.Na))
                     #block_size, Na, Nd -> block_size, Nd, Na
-                    post_mean = post_mean.reshape(batch_shape).transpose((0,2,1))
-                    post_var = post_var.reshape(batch_shape).transpose((0,2,1))
+                    post_mean = post_mean.reshape((block_size, self.Na, self.Nd_screen)).transpose((0,2,1))
+                    post_var = post_var.reshape((block_size, self.Na, self.Nd_screen)).transpose((0,2,1))
                 else:
                     # num_models, block_size
-                    weights = np.reshape(weights, (-1,) + batch_shape[:1])
-                    log_marginal_likelihoods = np.reshape(log_marginal_likelihoods, (-1,) + batch_shape[:1])
+                    weights = np.reshape(weights, (-1, block_size))
+                    log_marginal_likelihoods = np.reshape(log_marginal_likelihoods, (-1, block_size))
                     # block_size, Nd, Na -> block_size, Nd, Na
-                    post_mean = post_mean.reshape(batch_shape)
-                    post_var = post_var.reshape(batch_shape)
+                    post_mean = post_mean.reshape((block_size, self.Nd_screen, self.Na))
+                    post_var = post_var.reshape((block_size, self.Nd_screen, self.Na))
                 weights_array.append(weights)
+                log_marginal_likelihood_array.append((log_marginal_likelihoods))
                 post_mean_array.append(post_mean)
                 post_std_array.append(np.sqrt(post_var))
 
             if self.directional_deploy:
                 #num_models, Nt, Na
-                weights = np.concatenate(weights, axis=1)
+                weights_array = np.concatenate(weights_array, axis=1)
+                log_marginal_likelihood_array = np.concatenate(log_marginal_likelihood_array, axis=1)
             else:
                 #num_models, Nt
-                weights = np.concatenate(weights, axis=1)
+                weights_array = np.concatenate(weights_array, axis=1)
+                log_marginal_likelihood_array = np.concatenate(log_marginal_likelihood_array, axis=1)
             #Nt, Nd, Na -> Nd, Na, Nt
             post_mean_array = np.concatenate(post_mean_array, axis=0).transpose((1,2,0))
             post_std_array = np.concatenate(post_std_array, axis=0).transpose((1,2,0))
+            logging.info("Storing results")
             self.datapack.current_solset = 'screen_posterior'
+            self.datapack.select(**self.select)
             self.datapack.tec = post_mean_array
             self.datapack.weights_tec = post_std_array
 
@@ -174,23 +209,16 @@ class Deployment(object):
             _, freqs = self.datapack.get_freqs(axes['freq'])
             tec_conv = -8.4479745e6 / freqs
 
-            post_phase_mean = post_mean_array[..., None, :] * tec_conv
-            post_phase_std = np.abs(post_std_array[..., None, :]*tec_conv)
+            post_phase_mean = post_mean_array[..., None, :] * tec_conv[:, None] + self.phase_di
+            post_phase_std = np.abs(post_std_array[..., None, :]*tec_conv[:, None])
 
             self.datapack.phase = post_phase_mean
             self.datapack.weights_phase = post_phase_std
-
+            logging.info("Saving weights")
             np.save(os.path.join(self.cwd, 'weights.npy'), weights_array)
+            np.save(os.path.join(self.cwd, 'log_marginal_likelihoods.npy'), weights_array)
+            with np.printoptions(formatter={'float': '{: 0.3f}'.format}):
+                for idx, weights in enumerate(list(weights_array)):
+                    logging.info("Model {}\n{}".format(self.names[idx], weights))
 
-if __name__ == '__main__':
-    datapack = '/home/albert/lofar1_1/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v10.h5'
-    deployment = Deployment(datapack,
-                            ref_dir_idx=14, solset='sol000',
-                            flux_limit=0.05, max_N=250, min_spacing_arcmin=1.,
-                            srl_file = '/home/albert/ftp/image.pybdsm.srl.fits',
-                            ant = None, dir = None, time = slice(0, 1, 1), freq = None,
-                            pol = slice(0, 1, 1),
-                            directional_deploy = True, block_size = 1,
-                            working_dir = './deployment')
-    from bayes_filter.directional_models import generate_models
-    deployment.run(generate_models)
+        logging.info("Done.")
