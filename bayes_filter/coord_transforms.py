@@ -165,7 +165,6 @@ class ITRSToENUWithReferences_v2(Callback):
         super(ITRSToENUWithReferences_v2, self).__init__(ref_antenna=ref_antenna,
                                                       ref_direction=ref_direction,
                                                       ref_location=ref_location)
-
     def generate(self, ref_antenna, ref_direction, ref_location):
         self.output_dtypes = [float_type, float_type, float_type]
         self.name = 'ITRSToENUWithReferences_v2'

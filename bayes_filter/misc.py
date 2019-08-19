@@ -73,6 +73,38 @@ def laplace_gaussian_marginalisation(L, y, order = 10):
     poly_coeffs_2 = np.array([ -c if i%2 == 1 else c for i,c in enumerate(poly_coeffs_1)], float_type)
     #TODO: finish the function
 
+def make_soltab(datapack:DataPack, from_solset='sol000', to_solset='sol000', from_soltab='phase000', to_soltab='tec000'):
+    if not isinstance(to_soltab, (list, tuple)):
+        to_soltab = [to_soltab]
+
+    with datapack:
+        datapack.current_solset = from_solset
+        datapack.select(ant=None, time=None, dir=None, freq=None, pol=None)
+        axes = getattr(datapack, "axes_{}".format(from_soltab.replace('000', '')))
+        antenna_labels, antennas = datapack.get_antennas(axes['ant'])
+        patch_names, directions = datapack.get_directions(axes['dir'])
+        timestamps, times = datapack.get_times(axes['time'])
+        freq_labels, freqs = datapack.get_freqs(axes['freq'])
+        pol_labels, pols = datapack.get_pols(axes['pol'])
+        Npol, Nd, Na, Nf, Nt = len(pols), len(directions), len(antennas), len(freqs), len(times)
+        if to_solset not in datapack.solsets:
+            datapack.add_solset(to_solset,
+                                array_file=DataPack.lofar_array,
+                                directions=np.stack([directions.ra.to(angle_type).value,
+                                                     directions.dec.to(angle_type).value], axis=1),
+                                patch_names=patch_names)
+        if 'tec000' in to_soltab:
+            datapack.add_soltab('tec000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
+                                dir=patch_names)
+        if 'clock000' in to_soltab:
+            datapack.add_soltab('clock000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels,
+                                ant=antenna_labels, dir=patch_names)
+        if 'phase000' in to_soltab:
+            datapack.add_soltab('phase000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                ant=antenna_labels, dir=patch_names)
+        if 'amplitude000' in to_soltab:
+            datapack.add_soltab('amplitude000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
+                                ant=antenna_labels, dir=patch_names)
 
 
 def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_name: str,
@@ -90,63 +122,10 @@ def maybe_create_posterior_solsets(datapack: DataPack, solset: str, posterior_na
             if make_screen_solset:
                 logging.info("Deleting existing solset: {}".format(screen_solset))
                 datapack.delete_solset(screen_solset)
-        if data_solset not in datapack.solsets and make_data_solset:
-            logging.info("Creating posterior data solset")
-            datapack.current_solset = solset
-            datapack.select(ant=None, time=None, dir=None, freq=None, pol=None)
-            axes = datapack.axes_phase
-            antenna_labels, antennas = datapack.get_antennas(axes['ant'])
-            patch_names, directions = datapack.get_directions(axes['dir'])
-            timestamps, times = datapack.get_times(axes['time'])
-            freq_labels, freqs = datapack.get_freqs(axes['freq'])
-            pol_labels, pols = datapack.get_pols(axes['pol'])
-            Npol, Nd, Na, Nf, Nt = len(pols), len(directions), len(antennas), len(freqs), len(times)
-
-            datapack.add_solset(data_solset,
-                                array_file=DataPack.lofar_array,
-                                directions=np.stack([directions.ra.to(angle_type).value,
-                                                     directions.dec.to(angle_type).value], axis=1),
-                                patch_names=patch_names)
-            if 'tec000' in make_soltabs:
-                datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
-                                    dir=patch_names)
-            if 'clock000' in make_soltabs:
-                datapack.add_soltab('clock000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels,
-                                    ant=antenna_labels, dir=patch_names)
-            if 'phase000' in make_soltabs:
-                datapack.add_soltab('phase000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
-                                    ant=antenna_labels, dir=patch_names)
-            if 'amplitude000' in make_soltabs:
-                datapack.add_soltab('amplitude000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
-                                    ant=antenna_labels, dir=patch_names)
-        if screen_solset not in datapack.solsets and make_screen_solset:
-            logging.info("Creating posterior screen solset")
-            datapack.current_solset = solset
-            datapack.select(ant=None, time=None, dir=None, freq=None, pol=None)
-            axes = datapack.axes_phase
-            antenna_labels, antennas = datapack.get_antennas(axes['ant'])
-            patch_names, directions = datapack.get_directions(axes['dir'])
-            timestamps, times = datapack.get_times(axes['time'])
-            freq_labels, freqs = datapack.get_freqs(axes['freq'])
-            pol_labels, pols = datapack.get_pols(axes['pol'])
-            Npol, Nd, Na, Nf, Nt = len(pols), len(directions), len(antennas), len(freqs), len(times)
-            datapack.add_solset(screen_solset,
-                                array_file=DataPack.lofar_array,
-                                directions=np.stack([screen_directions.ra.to(angle_type).value,
-                                                     screen_directions.dec.to(angle_type).value], axis=1))
-            screen_patch_names, _ = datapack.directions
-            if 'tec000' in make_soltabs:
-                datapack.add_soltab('tec000', weightDtype='f64', time=times.mjd * 86400., pol=pol_labels, ant=antenna_labels,
-                                    dir=screen_patch_names)
-            if 'clock000' in make_soltabs:
-                datapack.add_soltab('clock000', weightDtype='f16', time=times.mjd * 86400., pol=pol_labels,
-                                    ant=antenna_labels, dir=screen_patch_names)
-            if 'phase000' in make_soltabs:
-                datapack.add_soltab('phase000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
-                                    ant=antenna_labels, dir=screen_patch_names)
-            if 'amplitude000' in make_soltabs:
-                datapack.add_soltab('amplitude000', weightDtype='f16', freq=freqs, time=times.mjd * 86400., pol=pol_labels,
-                                    ant=antenna_labels, dir=screen_patch_names)
+        if make_data_solset:
+            make_soltab(datapack, 'sol000', data_solset, 'phase000', make_soltabs)
+        if make_screen_solset:
+            make_soltab(datapack, 'sol000', screen_solset, 'phase000', make_soltabs)
         datapack.current_solset = solset
 
 def dict2namedtuple(d, name="Result"):

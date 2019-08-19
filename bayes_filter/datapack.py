@@ -43,6 +43,8 @@ class DataPack(object):
     gmrt_array = os.path.join(_arrays, 'arrays/gmrtPos.csv')
 
     def __init__(self, filename, readonly=False):
+        if isinstance(filename, DataPack):
+            filename = filename.filename
         self.filename = os.path.abspath(filename)
         self.readonly = readonly
         self._H = None
