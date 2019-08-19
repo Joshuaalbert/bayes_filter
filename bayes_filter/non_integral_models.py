@@ -1,5 +1,4 @@
 import tensorflow as tf
-from . import float_type
 from gpflow.kernels import Kernel
 from gpflow.params import Parameter
 from gpflow import params_as_tensors
@@ -7,29 +6,21 @@ from gpflow import settings
 from gpflow import transforms
 import numpy as np
 from .model import HGPR
-from .directional_models import ArcCosineEQ, gpflow_kernel, Piecewise
+from .directional_models import gpflow_kernel
+float_type = settings.float_type
 
 class NonIntegralKernel(Kernel):
-    def __init__(self, input_dim,
-                 amplitude=1., dirscale=0.1, antscale=10.,
+    def __init__(self,
                  ref_direction=[0., 0., 1.],
                  ref_location = [0., 0., 0.],
                  ant_anisotropic=False,
                  dir_anisotropic=False,
                  active_dims=None,
-                 dir_kernel = ArcCosineEQ,
-                 ant_kernel=Piecewise,
+                 dir_kernel = None,
+                 ant_kernel=None,
                  obs_type='DDTEC', name=None):
-        super().__init__(input_dim, active_dims, name=name)
-        self.amplitude = Parameter(amplitude,
-                                   transform=transforms.positiveRescale(amplitude),
-                                   dtype=settings.float_type)
-        self.dirscale = Parameter(dirscale,
-                                  transform=transforms.positiveRescale(dirscale),
-                                  dtype=settings.float_type)
-        self.antscale = Parameter(dirscale,
-                                  transform=transforms.positiveRescale(antscale),
-                                  dtype=settings.float_type)
+        super().__init__(6, active_dims, name="NonIntKernel_{}_{}".format(dir_kernel.name, ant_kernel.name))
+
         self.dir_kernel = dir_kernel
         self.ant_kernel = ant_kernel
 
@@ -96,40 +87,46 @@ class NonIntegralKernel(Kernel):
             else:
                 x2 = tf.matmul(x2, self.ant_M, transpose_b=True)
 
-        kern_dir = self.dir_kernel(
-            length_scale=self.dirscale)
-        kern_ant = self.ant_kernel(
-            length_scale=self.antscale)
+        kern_dir = self.dir_kernel
+        kern_ant = self.ant_kernel
 
         res = None
         if self.obs_type == 'TEC':
             res = kern_dir(k1, k2)
         if self.obs_type == 'DTEC':
             if sym:
-                ant_sym = kern_ant(x1, self.ref_direction[None, :])
-                res = kern_ant(x1, x2) - ant_sym - tf.transpose(ant_sym, (1, 0)) + 1.
-            res = kern_dir(x1, x2) - kern_dir(self.ref_location[None, :], x2) - kern_ant(x1, self.ref_location[None,:]) + 1.
+                ant_sym = kern_ant.K(x1, self.ref_location[None, :])
+                res = kern_ant.K(x1, x2) - ant_sym - tf.transpose(ant_sym, (1, 0)) + kern_ant.K(self.ref_location[None, :], self.ref_location[None, :])
+            res = kern_dir.K(x1, x2) - kern_dir.K(self.ref_location[None, :], x2) - kern_ant.K(x1, self.ref_location[None,:]) + kern_ant.K(self.ref_location[None, :], self.ref_location[None, :])
 
         if self.obs_type == 'DDTEC':
             if sym:
-                dir_sym = kern_dir(k1, self.ref_direction[None, :])
-                ant_sym = kern_ant(x1, self.ref_direction[None, :])
-                res = (kern_ant(x1, x2) - ant_sym - tf.transpose(ant_sym, (1, 0)) + 1.)*(kern_dir(k1, k2) - dir_sym - tf.transpose(dir_sym, (1,0)) + 1.)
-            res =  (kern_dir(x1, x2) - kern_dir(self.ref_location[None, :], x2) - kern_ant(x1, self.ref_location[None,:]) + 1.)*(kern_dir(k1, k2) - kern_dir(self.ref_direction[None, :], k2) - kern_dir(k1,self.ref_direction[None,:]) + 1.)
-        return tf.math.square(self.amplitude) * res
+                dir_sym = kern_dir.K(k1, self.ref_direction[None, :])
+                ant_sym = kern_ant.K(x1, self.ref_location[None, :])
+                res = (kern_ant.K(x1, x2) - ant_sym - tf.transpose(ant_sym, (1, 0)) + kern_ant.K(self.ref_location[None, :], self.ref_location[None, :]))*(kern_dir.K(k1, k2) - dir_sym - tf.transpose(dir_sym, (1,0)) + kern_dir.K(self.ref_direction[None, :], self.ref_direction[None, :]))
+            res =  (kern_dir.K(x1, x2) - kern_dir.K(self.ref_location[None, :], x2) - kern_ant.K(x1, self.ref_location[None,:]) + kern_ant.K(self.ref_location[None, :], self.ref_location[None, :]))*(kern_dir.K(k1, k2) - kern_dir.K(self.ref_direction[None, :], k2) - kern_dir.K(k1,self.ref_direction[None,:]) + kern_dir.K(self.ref_direction[None, :], self.ref_direction[None, :]))
+        return res
 
-def generate_models(X, Y, Y_var, ref_direction, ref_location, initial_amplitude=1., initial_dirscale=0.1, initial_antscale=10., reg_param = 1., parallel_iterations=10):
+def generate_models(X, Y, Y_var, ref_direction, ref_location, reg_param = 1., parallel_iterations=10):
 
-    dir_kernels = [Piecewise, ArcCosineEQ, gpflow_kernel('RBF'), gpflow_kernel('M52'), gpflow_kernel('M32'), gpflow_kernel('ArcCosine')]
-    ant_kernels = [Piecewise, ArcCosineEQ, gpflow_kernel('RBF'), gpflow_kernel('M52'), gpflow_kernel('M32'), gpflow_kernel('ArcCosine')]
+    dir_kernels = [#gpflow_kernel('Piecewise'),
+                   # gpflow_kernel('ArcCosineEQ', dims=3, amplitude=10., length_scale=0.01),
+                   gpflow_kernel('RBF', dims=3, variance=10. ** 2, lengthscales=0.1),
+                   gpflow_kernel('M52', dims=3, variance=10. ** 2, lengthscales=0.1),
+                   gpflow_kernel('M32', dims=3, variance=10. ** 2, lengthscales=0.1),
+                   gpflow_kernel('ArcCosine', dims=3, variance=10. ** 2)
+    ]
+    ant_kernels = [#gpflow_kernel('Piecewise'),
+                   #gpflow_kernel('ArcCosineEQ'),
+                   gpflow_kernel('RBF', dims=3, variance=1, lengthscales=10.),
+                   gpflow_kernel('M52', dims=3, variance=1, lengthscales=10.),
+                   gpflow_kernel('M32', dims=3, variance=1, lengthscales=10.),
+                   gpflow_kernel('ArcCosine', dims=3, variance =1.)
+    ]
     kernels = []
     for a in ant_kernels:
         for d in dir_kernels:
-            kernels.append(NonIntegralKernel(6,
-                                amplitude=initial_amplitude,
-                                dirscale=initial_dirscale,
-                                 antscale=initial_antscale,
-                                ref_direction=ref_direction,
+            kernels.append(NonIntegralKernel(ref_direction=ref_direction,
                                  ref_location=ref_location,
                                 ant_anisotropic=False,
                                  dir_anisotropic=False,
@@ -137,7 +134,8 @@ def generate_models(X, Y, Y_var, ref_direction, ref_location, initial_amplitude=
                                  ant_kernel = a,
                                 obs_type='DDTEC'))
 
-    models = [HGPR(X, Y, Y_var, kern, regularisation_param=reg_param, parallel_iterations=parallel_iterations)
+    models = [HGPR(X, Y, Y_var, kern, regularisation_param=reg_param, parallel_iterations=parallel_iterations,
+                   name='HGPR_{}'.format(kern.name))
               for kern in kernels]
 
     return models

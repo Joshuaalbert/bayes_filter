@@ -9,6 +9,7 @@ import numpy as np
 from typing import List
 from scipy.special import logsumexp
 from gpflow.training import ScipyOptimizer
+from . import logging
 
 class HGPR(GPModel):
 
@@ -30,21 +31,21 @@ class HGPR(GPModel):
     @name_scope('common')
     @params_as_tensors
     def _build_common(self):
-        # M, M
+        # (T), M, M
         Kmm = self.kern.K(self.X)
-        # B, M
+        # B, (T), M
         Y_std = tf.math.sqrt(self.Y_var)
 
         M = tf.shape(Kmm)[-1]
         # M, M
         eye = tf.linalg.eye(M, dtype=float_type)
-        # B, M, M
+        # B, (T), M, M
         K_sigma = Kmm / (Y_std[..., :, None] * Y_std[..., None, :]) + eye
-        # B, M, M
+        # B, (T), M, M
         L = tf.linalg.cholesky(K_sigma)
-        # B, M
+        # B, (T), M
         Y = self.Y / Y_std
-        # B, M, 1
+        # B, (T), M, 1
         Ly = tf.linalg.triangular_solve(L, Y[..., :, None])
 
         return L, Ly, Y_std
@@ -56,18 +57,19 @@ class HGPR(GPModel):
 
         M = tf.shape(L)[-1]
 
-        # B
+        # B, (T)
         maha = -0.5 * tf.reduce_sum(tf.math.square(Ly), axis=[-1, -2])
 
-        # B, M
+        # B, (T), M
         x_ok = tf.not_equal(Y_std, tf.constant(np.inf, float_type))
+        # B, (T), M
         safe_x = tf.where(x_ok, Y_std, tf.ones_like(Y_std))
-        # B
+        # B, (T)
         logdetL = tf.reduce_sum(tf.where(x_ok, tf.math.log(tf.linalg.diag_part(L) * safe_x), tf.zeros_like(Y_std)),
                                 axis=-1)
 
         constant = 0.5 * np.log(np.sqrt(2. * np.pi)) * tf.cast(M, float_type)
-        # B
+        # B, (T)
         log_marginal_likelihood = maha - self.regularisation_param * logdetL - constant
         return log_marginal_likelihood
 
@@ -79,6 +81,7 @@ class HGPR(GPModel):
             \log p(Y | theta).
         """
         L, Ly, Y_std = self._build_common()
+        #B, (T)
         log_marginal_likelihood = self._build_batched_likelihood(L, Ly, Y_std)
         return tf.reduce_sum(log_marginal_likelihood)
 
@@ -91,25 +94,25 @@ class HGPR(GPModel):
             p(F* | Y)
         where F* are points on the GP at Xnew, Y are noisy observations at X.
         """
-
+        #[B, (T), M, M], [B, (T), M, 1], [B, (T), M]
         L, Ly, Y_std = self._build_common()
 
-        # M, N
+        # (T), M, N
         Kmn = self.kern.K(self.X, Xnew)
-        # N, N
+        # (T), N, N
         Knn = self.kern.K(Xnew) if full_cov else self.kern.Kdiag(Xnew)
 
-        # B, M, N
+        # B, (T), M, N
         A = tf.linalg.triangular_solve(L, Kmn / Y_std[..., :, None])
 
-        # B, N, 1
+        # B, (T), N, 1
         post_mean = tf.matmul(A, Ly, transpose_a=True)[..., :, 0]
         if full_cov:
-            # B, N, N
+            # B, (T), N, N
             post_cov = Knn - tf.matmul(A, A, transpose_a=True)
         else:
             # sum_k A[k,i]A[k,j]
-            # B, N
+            # B, (T), N
             post_cov = Knn - tf.reduce_sum(tf.math.square(A), axis=-2)
         return post_mean, post_cov
 
@@ -130,7 +133,8 @@ class HGPR(GPModel):
         return self.likelihood.predict_mean_and_var(pred_f_mean, pred_f_var)
 
     @autoflow((float_type, [None, None]))
-    def log_marginal_likelihood_and_predict_f(self, Xnew, full_cov = False, only_mean = False):
+    @params_as_tensors
+    def log_marginal_likelihood_and_predict_f_mean_and_cov(self, Xnew):
         """
         Compute the mean and variance of the latent function(s) at the points
         Xnew.
@@ -141,26 +145,66 @@ class HGPR(GPModel):
         # M, N
         Kmn = self.kern.K(self.X, Xnew)
         # N, N
-        Knn = self.kern.K(Xnew) if full_cov else self.kern.Kdiag(Xnew)
+        Knn = self.kern.K(Xnew)
 
         # B, M, N
         A = tf.linalg.triangular_solve(L, Kmn / Y_std[..., :, None])
 
-        # B, N, 1
+        # B, N
         post_mean = tf.matmul(A, Ly, transpose_a=True)[..., :, 0]
 
-        if full_cov:
-            # B, N, N
-            post_cov = Knn - tf.matmul(A, A, transpose_a=True)
-        else:
-            # sum_k A[k,i]A[k,j]
-            # B, N
-            post_cov = Knn - tf.reduce_sum(tf.math.square(A), axis=-2)
+        # B, N, N
+        post_cov = Knn - tf.matmul(A, A, transpose_a=True)
 
-        if only_mean:
-            return log_marginal_likelihood, post_mean
         return log_marginal_likelihood, post_mean, post_cov
 
+    @autoflow((float_type, [None, None]))
+    @params_as_tensors
+    def log_marginal_likelihood_and_predict_f_mean_and_var(self, Xnew):
+        """
+        Compute the mean and variance of the latent function(s) at the points
+        Xnew.
+        """
+        L, Ly, Y_std = self._build_common()
+        log_marginal_likelihood = self._build_batched_likelihood(L, Ly, Y_std)
+
+        # M, N
+        Kmn = self.kern.K(self.X, Xnew)
+        # N, N
+        Knn = self.kern.Kdiag(Xnew)
+
+        # B, M, N
+        A = tf.linalg.triangular_solve(L, Kmn / Y_std[..., :, None])
+
+        # B, N
+        post_mean = tf.matmul(A, Ly, transpose_a=True)[..., :, 0]
+
+        # sum_k A[k,i]A[k,j]
+        # B, N
+        post_cov = Knn - tf.reduce_sum(tf.math.square(A), axis=-2)
+
+        return log_marginal_likelihood, post_mean, post_cov
+
+    @autoflow((float_type, [None, None]))
+    @params_as_tensors
+    def log_marginal_likelihood_and_predict_f_only_mean(self, Xnew):
+        """
+        Compute the mean and variance of the latent function(s) at the points
+        Xnew.
+        """
+        L, Ly, Y_std = self._build_common()
+        log_marginal_likelihood = self._build_batched_likelihood(L, Ly, Y_std)
+
+        # M, N
+        Kmn = self.kern.K(self.X, Xnew)
+
+        # B, M, N
+        A = tf.linalg.triangular_solve(L, Kmn / Y_std[..., :, None])
+
+        # B, N
+        post_mean = tf.matmul(A, Ly, transpose_a=True)[..., :, 0]
+
+        return log_marginal_likelihood, post_mean
 
 class AverageModel(object):
     def __init__(self, models: List[HGPR]):
@@ -183,7 +227,9 @@ class AverageModel(object):
     def optimise(self):
         opt = ScipyOptimizer()
         for model in self.models:
+            logging.info("Optimising model: {}".format(model.name))
             opt.minimize(model)
+            logging.info(model.kern)
 
     def predict_f(self, X, only_mean=True):
         """
@@ -196,30 +242,28 @@ class AverageModel(object):
         log_marginal_likelihoods = []
         for model in self.models:
             if only_mean:
-                # [B], [B, N]
-                log_marginal_likelihood, post_mean = model.log_marginal_likelihood_and_predict_f(X, full_cov=False,
-                                                                                                 only_mean=True)
+                # [B, (T)], [B, (T), N]
+                log_marginal_likelihood, post_mean = model.log_marginal_likelihood_and_predict_f_only_mean(X)
             else:
-                # [B], [B, N], [B, N]
-                log_marginal_likelihood, post_mean, post_var = model.log_marginal_likelihood_and_predict_f(X, full_cov=False,
-                                                                                                 only_mean=False)
+                # [B, (T)], [B, (T), N], [B, (T), N]
+                log_marginal_likelihood, post_mean, post_var = model.log_marginal_likelihood_and_predict_f_mean_and_var(X)
                 post_vars.append(post_var)
             post_means.append(post_mean)
             log_marginal_likelihoods.append(log_marginal_likelihood)
-        # num_models, batch_size
+        # num_models, batch_size, (T)
         log_marginal_likelihoods = np.stack(log_marginal_likelihoods, axis=0)
         # batch_size
         # num_models, batch_size, N
         post_means = np.stack(post_means, axis = 0)
-        # num_models, batch_size
+        # num_models, batch_size, (T)
         weights = np.exp(log_marginal_likelihoods - logsumexp(log_marginal_likelihoods, axis=0))
-        # batch_size, N
-        post_mean = np.sum(weights[:,:,None]*post_means, axis=0)
+        # batch_size, (T),  N
+        post_mean = np.sum(weights[..., None]*post_means, axis=0)
         if not only_mean:
             # num_models, batch_size, N
             post_vars = np.stack(post_vars, axis=0)
             # batch_size, N
-            post_var = np.sum(weights[:,:,None]*(post_vars + np.square(post_means)), axis=0) - np.square(post_mean)
+            post_var = np.sum(weights[..., None]*(post_vars + np.square(post_means)), axis=0) - np.square(post_mean)
             return (weights, log_marginal_likelihoods), post_mean, post_var
         return (weights, log_marginal_likelihoods), post_mean
 
