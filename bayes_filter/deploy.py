@@ -126,49 +126,38 @@ class Deployment(object):
                 X, X_screen, ref_direction, ref_location = tf_session.run([tf_X, tf_X_screen, tf_ref_dir, tf_ref_ant],
                                                  feed_dict)
 
-                if self.directional_deploy:
-                    # block_size, Na, Nd
-                    Y = self.tec[start:stop,:,:]
-                    # block_size, Na, Nd
-                    # Y = Y.reshape((-1, self.Nd))
-                    Y_var = np.square(self.tec_uncert[start:stop,:,:])
-                    logging.info(
-                        "X: {}, Y: {}, Y_var: {}, X_screen: {} ref_dir: {}".format(X.shape, Y.shape, Y_var.shape,
-                                                                                   X_screen.shape, ref_direction))
-                    if self.models is None:
+                with tf.Session(graph=tf.Graph()) as gp_session:
+                    if self.directional_deploy:
+                        # block_size, Na, Nd
+                        Y = self.tec[start:stop,:,:]
+                        # block_size, Na, Nd
+                        # Y = Y.reshape((-1, self.Nd))
+                        Y_var = np.square(self.tec_uncert[start:stop,:,:])
+                        logging.info(
+                            "X: {}, Y: {}, Y_var: {}, X_screen: {} ref_dir: {}".format(X.shape, Y.shape, Y_var.shape,
+                                                                                       X_screen.shape, ref_direction))
                         self.models = model_generator(X, Y, Y_var, ref_direction, reg_param=1., parallel_iterations=10)
                         self.names = [m.name for m in self.models]
-                    for model in self.models:
-                        model.X = X
-                        model.Y = Y
-                        model.Y_var = Y_var
-                        model.ref_direction = ref_direction
 
-                else:
-                    #block_size, Nd, Na
-                    Y = self.tec[start:stop, :, :]
-                    Y = Y.reshape((-1, self.Nd*self.Na))
-                    # block_size, Nd, Na
-                    Y_var = np.square(self.tec_uncert[start:stop, :, :]).reshape((-1, self.Nd*self.Na))
-                    logging.info(
-                        "X: {}, Y: {}, Y_var: {}, X_screen: {} ref_dir: {} ref_ant: {}".format(X.shape, Y.shape, Y_var.shape,
-                                                                                   X_screen.shape, ref_direction, ref_location))
-                    if self.models is None:
+
+                    else:
+                        #block_size, Nd, Na
+                        Y = self.tec[start:stop, :, :]
+                        Y = Y.reshape((-1, self.Nd*self.Na))
+                        # block_size, Nd, Na
+                        Y_var = np.square(self.tec_uncert[start:stop, :, :]).reshape((-1, self.Nd*self.Na))
+                        logging.info(
+                            "X: {}, Y: {}, Y_var: {}, X_screen: {} ref_dir: {} ref_ant: {}".format(X.shape, Y.shape, Y_var.shape,
+                                                                                       X_screen.shape, ref_direction, ref_location))
                         self.models = model_generator(X, Y, Y_var, ref_direction, ref_location, reg_param=1., parallel_iterations=10)
                         self.names = [m.name for m in self.models]
-                    for model in self.models:
-                        model.X = X
-                        model.Y = Y
-                        model.Y_var = Y_var
-                        model.ref_direction = ref_direction
-                        model.ref_location = ref_location
 
-                model = AverageModel(self.models)
-                logging.info("Optimising models")
-                model.optimise()
-                logging.info("Predicting posteriors and averaging")
-                # batch_size, N
-                (weights, log_marginal_likelihoods), post_mean, post_var = model.predict_f(X_screen, only_mean=False)
+                    model = AverageModel(self.models)
+                    logging.info("Optimising models")
+                    model.optimise()
+                    logging.info("Predicting posteriors and averaging")
+                    # batch_size, N
+                    (weights, log_marginal_likelihoods), post_mean, post_var = model.predict_f(X_screen, only_mean=False)
                 if self.directional_deploy:
                     # num_models, block_size, Na
                     weights = np.reshape(weights, (-1, block_size, self.Na))
