@@ -18,8 +18,12 @@ class NonIntegralKernel(Kernel):
                  active_dims=None,
                  dir_kernel = None,
                  ant_kernel=None,
-                 obs_type='DDTEC', name=None):
-        super().__init__(6, active_dims, name="NonIntKernel_{}_{}".format(dir_kernel.name, ant_kernel.name))
+                 obs_type='DDTEC'):
+        super().__init__(6, active_dims,
+                         name="NonIntKernel_{}{}_{}{}".format('aniso' if dir_anisotropic else "iso",
+                                                              dir_kernel.name,
+                                                              'aniso' if ant_anisotropic else "iso",
+                                                              ant_kernel.name))
 
         self.dir_kernel = dir_kernel
         self.ant_kernel = ant_kernel
@@ -90,35 +94,39 @@ class NonIntegralKernel(Kernel):
         kern_dir = self.dir_kernel
         kern_ant = self.ant_kernel
 
-        res = None
-        if self.obs_type == 'TEC':
-            res = kern_dir(k1, k2)
-        if self.obs_type == 'DTEC':
-            if sym:
-                ant_sym = kern_ant.K(x1, self.ref_location[None, :])
-                res = kern_ant.K(x1, x2) - ant_sym - tf.transpose(ant_sym, (1, 0)) + kern_ant.K(self.ref_location[None, :], self.ref_location[None, :])
-            res = kern_dir.K(x1, x2) - kern_dir.K(self.ref_location[None, :], x2) - kern_ant.K(x1, self.ref_location[None,:]) + kern_ant.K(self.ref_location[None, :], self.ref_location[None, :])
+        Ka00 = kern_ant.K(x1, x2)
+        Ka01 = kern_ant.K(x1, self.ref_location[None, :])
+        if sym:
+            Ka10 = tf.transpose(Ka01)
+        else:
+            Ka10 = kern_ant.K(self.ref_location[None, :], x2)
+        Ka11 = kern_ant.K(self.ref_location[None, :], self.ref_location[None, :])
 
+
+        Kd00 = kern_dir.K(k1, k2)
+        Kd01 = kern_dir.K(k1, self.ref_direction[None, :])
+        if sym:
+            Kd10 = tf.transpose(Kd01)
+        else:
+            Kd10 = kern_dir.K(self.ref_direction[None, :], k2)
+        Kd11 = kern_dir.K(self.ref_direction[None, :], self.ref_direction[None, :])
+
+        if self.obs_type == 'TEC':
+            return Ka00*Kd00
+        if self.obs_type == 'DTEC':
+            return Kd00 + Kd01 + Kd10 + Kd11
         if self.obs_type == 'DDTEC':
-            if sym:
-                dir_sym = kern_dir.K(k1, self.ref_direction[None, :])
-                ant_sym = kern_ant.K(x1, self.ref_location[None, :])
-                res = (kern_ant.K(x1, x2) - ant_sym - tf.transpose(ant_sym, (1, 0)) + kern_ant.K(self.ref_location[None, :], self.ref_location[None, :]))*(kern_dir.K(k1, k2) - dir_sym - tf.transpose(dir_sym, (1,0)) + kern_dir.K(self.ref_direction[None, :], self.ref_direction[None, :]))
-            res =  (kern_dir.K(x1, x2) - kern_dir.K(self.ref_location[None, :], x2) - kern_ant.K(x1, self.ref_location[None,:]) + kern_ant.K(self.ref_location[None, :], self.ref_location[None, :]))*(kern_dir.K(k1, k2) - kern_dir.K(self.ref_direction[None, :], k2) - kern_dir.K(k1,self.ref_direction[None,:]) + kern_dir.K(self.ref_direction[None, :], self.ref_direction[None, :]))
-        return res
+            return (Ka00 + Ka01 + Ka10 + Ka11)*(Kd00 + Kd01 + Kd10 + Kd11)
+
 
 def generate_models(X, Y, Y_var, ref_direction, ref_location, reg_param = 1., parallel_iterations=10):
 
-    dir_kernels = [#gpflow_kernel('Piecewise'),
-                   # gpflow_kernel('ArcCosineEQ', dims=3, amplitude=10., length_scale=0.01),
-                   gpflow_kernel('RBF', dims=3, variance=10. ** 2, lengthscales=0.1),
-                   gpflow_kernel('M52', dims=3, variance=10. ** 2, lengthscales=0.1),
-                   gpflow_kernel('M32', dims=3, variance=10. ** 2, lengthscales=0.1),
+    dir_kernels = [gpflow_kernel('RBF', dims=3, variance=10. ** 2, lengthscales=0.01),
+                   gpflow_kernel('M52', dims=3, variance=10. ** 2, lengthscales=0.01),
+                   gpflow_kernel('M32', dims=3, variance=10. ** 2, lengthscales=0.01),
                    gpflow_kernel('ArcCosine', dims=3, variance=10. ** 2)
     ]
-    ant_kernels = [#gpflow_kernel('Piecewise'),
-                   #gpflow_kernel('ArcCosineEQ'),
-                   gpflow_kernel('RBF', dims=3, variance=1, lengthscales=10.),
+    ant_kernels = [gpflow_kernel('RBF', dims=3, variance=1, lengthscales=10.),
                    gpflow_kernel('M52', dims=3, variance=1, lengthscales=10.),
                    gpflow_kernel('M32', dims=3, variance=1, lengthscales=10.),
                    gpflow_kernel('ArcCosine', dims=3, variance =1.)

@@ -196,8 +196,10 @@ class DirectionalKernel(Kernel):
                  active_dims=None,
                  amplitude=None,
                  inner_kernel=None,
-                 obs_type='DDTEC', name=None):
-        super().__init__(3, active_dims, name="DirectionalKernel_{}_{}".format("aniso" if anisotropic else "iso", inner_kernel.name))
+                 obs_type='DDTEC'):
+        super().__init__(3, active_dims,
+                         name="DirectionalKernel_{}{}".format("aniso" if anisotropic else "iso",
+                                                               inner_kernel.name))
         self.inner_kernel = inner_kernel
 
         self.obs_type = obs_type
