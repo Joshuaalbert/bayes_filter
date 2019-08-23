@@ -120,26 +120,23 @@ class NonIntegralKernel(Kernel):
 
 
 def generate_models(X, Y, Y_var, ref_direction, ref_location, reg_param = 1., parallel_iterations=10):
-
-    dir_kernels = [gpflow_kernel('RBF', dims=3, variance=10. ** 2, lengthscales=0.01),
-                   gpflow_kernel('M52', dims=3, variance=10. ** 2, lengthscales=0.01),
-                   gpflow_kernel('M32', dims=3, variance=10. ** 2, lengthscales=0.01),
-                   gpflow_kernel('ArcCosine', dims=3, variance=10. ** 2)
-    ]
-    ant_kernels = [gpflow_kernel('RBF', dims=3, variance=1, lengthscales=10.),
-                   gpflow_kernel('M52', dims=3, variance=1, lengthscales=10.),
-                   gpflow_kernel('M32', dims=3, variance=1, lengthscales=10.),
-                   gpflow_kernel('ArcCosine', dims=3, variance =1.)
-    ]
+    dir_settings = [('RBF', dict(variance=10**2, lengthscales=0.01)),
+                    ('M52', dict(variance=10**2, lengthscales=0.01)),
+                    ('M32', dict(variance=10**2, lengthscales=0.01)),
+                    ('ArcCosine', dict(variance=10**2))]
+    ant_settings = [('RBF', dict(variance=1., lengthscales=10.)),
+                    ('M52', dict(variance=1., lengthscales=10.)),
+                    ('M32', dict(variance=1., lengthscales=10.)),
+                    ('ArcCosine', dict(variance=1.))]
     kernels = []
-    for a in ant_kernels:
-        for d in dir_kernels:
+    for a in ant_settings:
+        for d in dir_settings:
             kernels.append(NonIntegralKernel(ref_direction=ref_direction,
                                  ref_location=ref_location,
                                 ant_anisotropic=False,
                                  dir_anisotropic=False,
-                                dir_kernel=d,
-                                 ant_kernel = a,
+                                dir_kernel=gpflow_kernel(d[0], **d[1]),
+                                 ant_kernel = gpflow_kernel(a[0], **a[1]),
                                 obs_type='DDTEC'))
 
     models = [HGPR(X, Y, Y_var, kern, regularisation_param=reg_param, parallel_iterations=parallel_iterations,
