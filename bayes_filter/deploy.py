@@ -205,7 +205,7 @@ class Deployment(object):
             self.datapack.weights_phase = post_phase_std
             logging.info("Saving weights")
             np.save(os.path.join(self.cwd, 'weights.npy'), weights_array)
-            np.save(os.path.join(self.cwd, 'log_marginal_likelihoods.npy'), weights_array)
+            np.save(os.path.join(self.cwd, 'log_marginal_likelihoods.npy'), log_marginal_likelihood_array)
             with np.printoptions(formatter={'float': '{: 0.3f}'.format}):
                 for idx, weights in enumerate(list(weights_array)):
                     logging.info("Model {}\n{}".format(self.names[idx], weights))
