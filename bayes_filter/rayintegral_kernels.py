@@ -18,7 +18,7 @@ def _validate_arg_if_not_none(arg, assertion, validate_args):
 
 
 class RayKernel(object):
-    def __init__(self, a, b, mu=None, ref_location=None, ref_direction=None, obs_type='DTEC', ionosphere_type='flat'):
+    def __init__(self, a, b, mu=None, ref_location=None, ref_direction=None, obs_type='DDTEC', ionosphere_type='flat'):
         if ionosphere_type == 'curved':
             if mu is None:
                 raise ValueError("Need a mu for curved.")
@@ -54,8 +54,8 @@ class RayKernel(object):
                 l = x + k * sm[:, None]
                 # N, 3
                 m = k * bsec[:, None]
-                ds = bsec
-                return l, m, ds
+                Delta_s = bsec
+                return l, m, Delta_s
 
         raise NotImplementedError("curved not implemented")
 
@@ -103,9 +103,9 @@ class RayKernel(object):
                     I_coeff.append(i)
                 for c in coord_list_prior:
                     coord_list.append(c)
-                    coord_list.append((c[0], c[1], c[2], self.ref_direction[None, :]))
-                    coord_list.append((c[0], self.ref_direction[None, :], c[2], c[3]))
-                    coord_list.append((c[0], self.ref_direction[None, :], c[2], self.ref_direction[None, :]))
+                    coord_list.append((c[0], c[1], self.ref_direction[None, :], c[3]))
+                    coord_list.append((self.ref_direction[None, :], c[1], c[2], c[3]))
+                    coord_list.append((self.ref_direction[None, :], c[1], self.ref_direction[None, :], c[3]))
             IK = []
             for i, c in zip(I_coeff, coord_list):
                 IK.append(i * self.I(*c))
