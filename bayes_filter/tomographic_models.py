@@ -105,7 +105,7 @@ class TomographicKernel(Kernel):
         raise NotImplementedError("curved not implemented")
 
     @params_as_tensors
-    def K(self, X1, X2, presliced=False):
+    def K(self, X1, X2=None, presliced=False):
         if not presliced:
             X1, X2 = self._slice(X1, X2)
 
