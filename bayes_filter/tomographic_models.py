@@ -205,7 +205,7 @@ class TomographicKernel(Kernel):
             ray2 = l2 + m2 * tf.reshape(s2, (-1,))[:, None, None]
 
             # res^2, N,M
-            I = tf.map_fn(lambda ray1, ray2: self.fed_kernel.K(ray1, ray2), (ray1, ray2), dtype=float_type)
+            I = tf.map_fn(lambda z: self.fed_kernel.K(z[0], z[1]), (ray1, ray2), dtype=float_type)
             # res, res, N,M
             I = tf.reshape(I, (self.resolution + 1, self.resolution + 1, N, M))
 
