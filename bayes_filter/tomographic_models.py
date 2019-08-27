@@ -154,7 +154,7 @@ class TomographicKernel(Kernel):
             for i, c in zip(I_coeff, coord_list):
                 IK.append(i * self.I(*c))
 
-            K = tf.math.square(tf.constant(KERNEL_SCALE, float_type)) * tf.add_n(IK)
+            K = tf.math.square(tf.constant(KERNEL_SCALE, float_type)) * sum(IK)#tf.add_n(IK)
 
             return K
 
