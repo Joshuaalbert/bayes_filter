@@ -33,8 +33,9 @@ class HGPR(GPModel):
     def _build_common(self):
         # (T), M, M
         Kmm = self.kern.K(self.X)
-        # B, (T), M
-        Y_std = tf.math.sqrt(self.Y_var)
+        with tf.control_dependencies([tf.print(Kmm)]):
+            # B, (T), M
+            Y_std = tf.math.sqrt(self.Y_var)
 
         M = tf.shape(Kmm)[-1]
         # M, M
@@ -83,7 +84,8 @@ class HGPR(GPModel):
         L, Ly, Y_std = self._build_common()
         #B, (T)
         log_marginal_likelihood = self._build_batched_likelihood(L, Ly, Y_std)
-        return tf.reduce_sum(log_marginal_likelihood)
+        with tf.control_dependencies([tf.print(log_marginal_likelihood)]):
+            return tf.reduce_sum(log_marginal_likelihood)
 
     @name_scope('predict')
     @params_as_tensors

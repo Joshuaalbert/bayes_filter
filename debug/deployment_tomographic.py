@@ -4,6 +4,7 @@ from bayes_filter.datapack import DataPack
 from bayes_filter.misc import make_soltab
 import numpy as np
 
+
 if __name__ == '__main__':
     datapack = DataPack('/home/albert/lofar1_1/imaging/data/P126+65_compact_raw/P126+65_full_compact_raw_v11.h5', readonly=False)
     make_soltab(datapack, from_solset='sol000', from_soltab='phase000', to_solset='sol000', to_soltab='tec000')

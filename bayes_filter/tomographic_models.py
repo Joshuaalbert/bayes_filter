@@ -4,9 +4,11 @@ from gpflow.params import Parameter
 from gpflow import params_as_tensors
 from gpflow import settings
 from gpflow import transforms
+from gpflow import autoflow
 import numpy as np
 from .model import HGPR
 from .directional_models import gpflow_kernel
+from tensorflow.python.ops.parallel_for import jacobian
 
 float_type = settings.float_type
 
@@ -21,7 +23,7 @@ def _validate_arg_if_not_none(arg, assertion, validate_args):
     return result
 
 
-class TomographicKernel(Kernel):
+class TECKernel(Kernel):
     """
         The DTEC kernel is derived from first principles by assuming a GRF over the electron density, from which DTEC kernel
         can be caluclated as,
@@ -36,12 +38,9 @@ class TomographicKernel(Kernel):
     def __init__(self,
                  a=250.,
                  b=100.,
-                 ref_direction=[0., 0., 1.],
-                 ref_location=[0., 0., 0.],
                  anisotropic=False,
                  active_dims=None,
                  fed_kernel: Kernel = None,
-                 obs_type='DDTEC',
                  ionosphere_type='flat',
                  resolution=8):
         super().__init__(6, active_dims,
@@ -52,16 +51,12 @@ class TomographicKernel(Kernel):
         self.resolution = resolution
         self.fed_kernel = fed_kernel
 
-        self.obs_type = obs_type
         if ionosphere_type == 'curved':
             raise ValueError("Curved not implemented yet.")
         self.ionosphere_type = ionosphere_type
         self.a = Parameter(a, dtype=float_type, transform=transforms.positiveRescale(a))
         self.b = Parameter(b, dtype=float_type, transform=transforms.positiveRescale(b))
-        self.ref_direction = Parameter(ref_direction,
-                                       dtype=float_type, trainable=False)
-        self.ref_location = Parameter(ref_location,
-                                      dtype=float_type, trainable=False)
+
         self.anisotropic = anisotropic
         if self.anisotropic:
             # Na, 3, 3
@@ -75,7 +70,7 @@ class TomographicKernel(Kernel):
         return tf.linalg.diag_part(self.K(X, None))
 
     @params_as_tensors
-    def calculate_ray_endpoints(self, x, k):
+    def calculate_ray_endpoints(self, k, x):
         """
         Calculate the s where x+k*(s- + Ds*s) intersects the ionosphere.
         l = x + k*s-
@@ -94,68 +89,39 @@ class TomographicKernel(Kernel):
                 bsec = sec * self.b
 
                 # N
-                sm = sec * (self.a + self.ref_location[2] - x[:, 2]) - 0.5 * bsec
+                # sm = sec * (self.a + self.ref_location[2] - x[:, 2]) - 0.5 * bsec
+                sm = sec * (self.a - x[:, 2]) - 0.5 * bsec
+
                 # N, 3
                 l = x + k * sm[:, None]
                 # N, 3
                 m = k * bsec[:, None]
                 Delta_s = bsec
                 return l, m, Delta_s
-
+, so we can't explain the whole situation, just a part of it.
         raise NotImplementedError("curved not implemented")
+
+    @autoflow((float_type, [None, None]))
+    @params_as_tensors
+    def K_grad(self, X1, X2 = None):
+        return jacobian(self.K(X1, X2), [self.a, self.b])
 
     @params_as_tensors
     def K(self, X1, X2=None, presliced=False):
         if not presliced:
             X1, X2 = self._slice(X1, X2)
-
-        self.sym = False
         if X2 is None:
-            X2 = X1
-            self.sym = True
+            k1, x1 = X1[:, 0:3], X1[:, 3:6]
+            coord_list = (k1, x1, None, None)
+        else:
+            coord_list = (X1[:, 0:3], X1[:, 3:6], X2[:, 0:3], X2[:, 3:6])
+        return self.K_sep(*coord_list)
 
-        with tf.name_scope('Tomographic_K'):
-            coord_list = None
-            I_coeff = None
-            if self.obs_type in ['TEC', 'DTEC', 'DDTEC']:
-                coord_list = [(X1[:, 0:3], X1[:, 3:6], X2[:, 0:3], X2[:, 3:6])]
-                I_coeff = [1.]
-            if self.obs_type in ['DTEC', 'DDTEC']:
-                coord_list_prior = coord_list
-                I_coeff_prior = I_coeff
-                I_coeff = []
-                coord_list = []
-                for i in I_coeff_prior:
-                    I_coeff.append(i)
-                    I_coeff.append(-i)
-                    I_coeff.append(-i)
-                    I_coeff.append(i)
-                for c in coord_list_prior:
-                    coord_list.append(c)
-                    coord_list.append((c[0], c[1], c[2], self.ref_location[None, :]))
-                    coord_list.append((c[0], self.ref_location[None, :], c[2], c[3]))
-                    coord_list.append((c[0], self.ref_location[None, :], c[2], self.ref_location[None, :]))
-            if self.obs_type in ['DDTEC']:
-                coord_list_prior = coord_list
-                I_coeff_prior = I_coeff
-                I_coeff = []
-                coord_list = []
-                for i in I_coeff_prior:
-                    I_coeff.append(i)
-                    I_coeff.append(-i)
-                    I_coeff.append(-i)
-                    I_coeff.append(i)
-                for c in coord_list_prior:
-                    coord_list.append(c)
-                    coord_list.append((c[0], c[1], self.ref_direction[None, :], c[3]))
-                    coord_list.append((self.ref_direction[None, :], c[1], c[2], c[3]))
-                    coord_list.append((self.ref_direction[None, :], c[1], self.ref_direction[None, :], c[3]))
-            IK = []
-            for i, c in zip(I_coeff, coord_list):
-                IK.append(i * self.I(*c))
-
-            K = tf.math.square(tf.constant(KERNEL_SCALE, float_type)) * sum(IK)#tf.add_n(IK)
-
+    @params_as_tensors
+    def K_sep(self, k1, x1, k2, x2):
+        with tf.name_scope('TEC_K'):
+            K = self.I(k1, x1, k2, x2)
+            K *= tf.math.square(tf.constant(KERNEL_SCALE, float_type))
             return K
 
     @params_as_tensors
@@ -170,14 +136,14 @@ class TomographicKernel(Kernel):
         :return:
         """
 
-        with tf.name_scope('Trapezoid_I'):
+        with tf.name_scope('Trapezoid_I', values=[k1, x1, k2, x2]):
             # N, 3
-            l1, m1, ds1 = self.calculate_ray_endpoints(x1, k1)
-            if self.sym:
+            l1, m1, ds1 = self.calculate_ray_endpoints(k1, x1)
+            if k2 is None and x2 is None:
                 l2, m2, ds2 = l1, m1, ds1
             else:
                 # M, 3
-                l2, m2, ds2 = self.calculate_ray_endpoints(x2, k2)
+                l2, m2, ds2 = self.calculate_ray_endpoints(k2, x2)
 
             if self.anisotropic:
                 # M_ij.k_nj = kni
@@ -208,7 +174,6 @@ class TomographicKernel(Kernel):
             I = tf.map_fn(lambda z: self.fed_kernel.K(z[0], z[1]), (ray1, ray2), dtype=float_type)
             # res, res, N,M
             I = tf.reshape(I, (self.resolution + 1, self.resolution + 1, N, M))
-
             # N,M
             I = 0.25 * ds * tf.add_n([I[0, 0, :, :],
                                       I[-1, 0, :, :],
@@ -221,6 +186,161 @@ class TomographicKernel(Kernel):
                                       4 * tf.reduce_sum(I[1:-1, 1:-1, :, :], axis=[0, 1])])
             return I
 
+class DTECKernel(TECKernel):
+    """
+        The DTEC kernel is derived from first principles by assuming a GRF over the electron density, from which DTEC kernel
+        can be caluclated as,
+
+        K(ray_i, ray_j) =     I(a_i, k_i, t_i, a_j, k_j, t_j)  + I(a0_i, k_i, t_i, a0_j, k_j, t_j)
+                            - I(a0_i, k_i, t_i, a_j, k_j, t_j) - I(a_i, k_i, t_i, a0_j, k_j, t_j)
+
+        where,
+                    I(a,b,c,d,e,g) = iint [K_ne(y(a,b,c), y(d,e,f))](s1,s2) ds1 ds2
+        """
+
+    def __init__(self,
+                 a=250.,
+                 b=100.,
+                 ref_location=[0., 0., 0.],
+                 anisotropic=False,
+                 active_dims=None,
+                 fed_kernel: Kernel = None,
+                 ionosphere_type='flat',
+                 resolution=8):
+        super(DTECKernel, self).__init__(a=a, b=b, anisotropic=anisotropic, active_dims=active_dims,
+                                         fed_kernel=fed_kernel, ionosphere_type=ionosphere_type,
+                                         resolution=resolution)
+
+        self.ref_location = Parameter(ref_location,
+                                      dtype=float_type, trainable=False)
+
+    @params_as_tensors
+    def K_sep(self, k1, x1, k2, x2):
+        with tf.name_scope('DTEC_K'):
+            if k2 is None and x2 is None:
+                N = tf.shape(k1)[0]
+                M = N
+                K00 = super(DTECKernel, self).K_sep(k1, x1, None, None)
+                K11 = super(DTECKernel, self).K_sep(k1, tf.tile(self.ref_location[None, :], [N, 1]), None, None)
+                K01 = super(DTECKernel, self).K_sep(k1, x1, k1, tf.tile(self.ref_location[None, :], [M, 1]))
+                K10 = tf.transpose(K01, (1, 0))
+            else:
+                N, M = tf.shape(k1)[0], tf.shape(k2)[0]
+                K00 = super(DTECKernel, self).K_sep(k1, x1, k2, x2)
+                K11 = super(DTECKernel, self).K_sep(k1, tf.tile(self.ref_location[None, :], [N, 1]), k2,
+                                                    tf.tile(self.ref_location[None, :], [M, 1]))
+                K01 = super(DTECKernel, self).K_sep(k1, x1, k2, tf.tile(self.ref_location[None, :], [M, 1]))
+                K10 = super(DTECKernel, self).K_sep(k1, tf.tile(self.ref_location[None, :], [N, 1]), k2, x2)
+            return K00 + K11 - K01 - K10
+
+
+class DDTECKernel(DTECKernel):
+    """
+        The DTEC kernel is derived from first principles by assuming a GRF over the electron density, from which DTEC kernel
+        can be caluclated as,
+
+        K(ray_i, ray_j) =     I(a_i, k_i, t_i, a_j, k_j, t_j)  + I(a0_i, k_i, t_i, a0_j, k_j, t_j)
+                            - I(a0_i, k_i, t_i, a_j, k_j, t_j) - I(a_i, k_i, t_i, a0_j, k_j, t_j)
+
+        where,
+                    I(a,b,c,d,e,g) = iint [K_ne(y(a,b,c), y(d,e,f))](s1,s2) ds1 ds2
+        """
+
+    def __init__(self,
+                 a=250.,
+                 b=100.,
+                 ref_location=[0., 0., 0.],
+                 ref_direction=[0., 0., 1.],
+                 anisotropic=False,
+                 active_dims=None,
+                 fed_kernel: Kernel = None,
+                 ionosphere_type='flat',
+                 resolution=8):
+        super(DDTECKernel, self).__init__(a=a, b=b, anisotropic=anisotropic, active_dims=active_dims,
+                                          fed_kernel=fed_kernel, ionosphere_type=ionosphere_type,
+                                          resolution=resolution, ref_location=ref_location)
+
+        self.ref_direction = Parameter(ref_direction,
+                                       dtype=float_type, trainable=False)
+
+    @params_as_tensors
+    def K_sep(self, k1, x1, k2, x2):
+        with tf.name_scope('DDTEC_K'):
+            if k2 is None and x2 is None:
+                N = tf.shape(k1)[0]
+                M = N
+                K00 = super(DDTECKernel, self).K_sep(k1, x1, None, None)
+                K11 = super(DDTECKernel, self).K_sep(tf.tile(self.ref_direction[None, :], [N, 1]), x1, None, None)
+                K10 = super(DDTECKernel, self).K_sep(tf.tile(self.ref_direction[None, :], [N, 1]), x1, k1, x1)
+                K01 = tf.transpose(K10, (1, 0))
+            else:
+                N, M = tf.shape(k1)[0], tf.shape(k2)[0]
+                K00 = super(DDTECKernel, self).K_sep(k1, x1, k2, x2)
+                K11 = super(DDTECKernel, self).K_sep(tf.tile(self.ref_direction[None, :], [N, 1]), x1,
+                                                     tf.tile(self.ref_direction[None, :], [M, 1]), x2)
+                K10 = super(DDTECKernel, self).K_sep(tf.tile(self.ref_direction[None, :], [N, 1]), x1, k2, x2)
+                K01 = super(DDTECKernel, self).K_sep(k1, x1, tf.tile(self.ref_direction[None, :], [M, 1]), x2)
+            return K00 + K11 - K01 - K10
+
+
+class TomographicKernel(Kernel):
+    """
+        The DTEC kernel is derived from first principles by assuming a GRF over the electron density, from which DTEC kernel
+        can be caluclated as,
+
+        K(ray_i, ray_j) =     I(a_i, k_i, t_i, a_j, k_j, t_j)  + I(a0_i, k_i, t_i, a0_j, k_j, t_j)
+                            - I(a0_i, k_i, t_i, a_j, k_j, t_j) - I(a_i, k_i, t_i, a0_j, k_j, t_j)
+
+        where,
+                    I(a,b,c,d,e,g) = iint [K_ne(y(a,b,c), y(d,e,f))](s1,s2) ds1 ds2
+        """
+
+    def __init__(self,
+                 a=250.,
+                 b=100.,
+                 ref_direction=[0., 0., 1.],
+                 ref_location=[0., 0., 0.],
+                 anisotropic=False,
+                 active_dims=None,
+                 fed_kernel: Kernel = None,
+                 obs_type='DDTEC',
+                 ionosphere_type='flat',
+                 resolution=8):
+        super().__init__(6, active_dims, name='Tomo{}{}'.format(obs_type.upper(), fed_kernel.name))
+        obs_type = obs_type.upper()
+        assert obs_type in ['TEC', 'DTEC', 'DDTEC']
+        if obs_type == 'TEC':
+            self.kernel = TECKernel(a=a,
+                                    b=b,
+                                    anisotropic=anisotropic,
+                                    active_dims=active_dims,
+                                    fed_kernel=fed_kernel,
+                                    ionosphere_type=ionosphere_type,
+                                    resolution=resolution)
+        if obs_type == 'DTEC':
+            self.kernel = DTECKernel(a=a,
+                                    b=b,
+                                    ref_location=ref_location,
+                                    anisotropic=anisotropic,
+                                    active_dims=active_dims,
+                                    fed_kernel=fed_kernel,
+                                    ionosphere_type=ionosphere_type,
+                                    resolution=resolution)
+        if obs_type == 'DDTEC':
+            self.kernel = DDTECKernel(a=a,
+                                    b=b,
+                                    ref_location=ref_location,
+                                    ref_direction=ref_direction,
+                                    anisotropic=anisotropic,
+                                    active_dims=active_dims,
+                                    fed_kernel=fed_kernel,
+                                    ionosphere_type=ionosphere_type,
+                                    resolution=resolution)
+
+    @params_as_tensors
+    def K(self, X1, X2=None, presliced=False):
+        return self.kernel.K(X1, X2=X2, presliced=presliced)
+
 
 ###
 # %
@@ -229,6 +349,7 @@ def generate_models(X, Y, Y_var, ref_direction, ref_location, reg_param=1., para
     fed_settings = [('RBF', dict(variance=1., lengthscales=10.)),
                     ('M52', dict(variance=1., lengthscales=10.)),
                     ('M32', dict(variance=1., lengthscales=10.)),
+                    ('M12', dict(variance=1., lengthscales=10.)),
                     ('ArcCosine', dict(variance=1.))]
     kernels = []
     for k in fed_settings:
@@ -237,7 +358,7 @@ def generate_models(X, Y, Y_var, ref_direction, ref_location, reg_param=1., para
                                          ref_location=ref_location,
                                          anisotropic=False,
                                          fed_kernel=gpflow_kernel(k[0], **k[1]),
-                                         obs_type='DDTEC',
+                                         obs_type='TEC',
                                          resolution=5,
                                          ionosphere_type='flat'))
 
