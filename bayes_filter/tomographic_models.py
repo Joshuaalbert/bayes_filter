@@ -98,8 +98,7 @@ class TECKernel(Kernel):
                 m = k * bsec[:, None]
                 Delta_s = bsec
                 return l, m, Delta_s
-, so we can't explain the whole situation, just a part of it.
-        raise NotImplementedError("curved not implemented")
+            raise NotImplementedError("curved not implemented")
 
     @autoflow((float_type, [None, None]))
     @params_as_tensors
